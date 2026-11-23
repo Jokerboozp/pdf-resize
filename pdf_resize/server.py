@@ -70,7 +70,7 @@ def system_info() -> dict[str, Any]:
 
 @app.get("/api/fs/list")
 def fs_list(path: str = Query(default="")) -> dict[str, Any]:
-    """List drives (Windows) or subdirectories for the in-app folder browser."""
+    """List drives (Windows) or quick roots (macOS/Linux) and subdirectories."""
     raw = path.strip()
     if not raw:
         if os.name == "nt":
@@ -80,7 +80,29 @@ def fs_list(path: str = Query(default="")) -> dict[str, Any]:
                 if os.path.exists(drive):
                     drives.append({"name": drive, "path": drive, "is_drive": True})
             return {"current": "", "parent": None, "entries": drives}
-        raw = "/"
+
+        # macOS / Linux quick access roots (Home, Desktop, Documents, Downloads, external Volumes, /)
+        entries = []
+        home = Path.home()
+        quick_paths = [
+            (f"主目录 ({home.name})", home),
+            ("桌面 (Desktop)", home / "Desktop"),
+            ("文稿 (Documents)", home / "Documents"),
+            ("下载 (Downloads)", home / "Downloads"),
+        ]
+        for label, p in quick_paths:
+            if p.exists() and p.is_dir():
+                entries.append({"name": label, "path": str(p.resolve()), "is_drive": True})
+        volumes = Path("/Volumes")
+        if volumes.exists() and volumes.is_dir():
+            try:
+                for v in sorted(volumes.iterdir(), key=lambda x: x.name.lower()):
+                    if v.is_dir():
+                        entries.append({"name": f"磁盘: {v.name}", "path": str(v), "is_drive": True})
+            except OSError:
+                pass
+        entries.append({"name": "根目录 (/)", "path": "/", "is_drive": True})
+        return {"current": "", "parent": None, "entries": entries}
 
     target = Path(raw).resolve()
     if not target.exists() or not target.is_dir():
@@ -111,8 +133,8 @@ def fs_list(path: str = Query(default="")) -> dict[str, Any]:
     parent_str: Optional[str] = None
     if target.parent != target:
         parent_str = str(target.parent)
-    elif os.name == "nt":
-        parent_str = ""  # Back to drive list
+    else:
+        parent_str = ""  # Back to drives / quick roots list
 
     return {
         "current": str(target),
@@ -125,6 +147,26 @@ def fs_list(path: str = Query(default="")) -> dict[str, Any]:
 @app.post("/api/fs/pick-folder")
 def fs_pick_folder() -> dict[str, Any]:
     """Open a native OS folder selection dialog in an isolated subprocess."""
+    if sys.platform == "darwin":
+        try:
+            proc = subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    'POSIX path of (choose folder with prompt "选择包含 PDF 的文件夹")',
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if proc.returncode != 0:
+                # User clicked Cancel (-128)
+                return {"path": None}
+            selected = proc.stdout.strip().rstrip("/") or "/"
+            return {"path": selected}
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"无法打开 macOS 文件夹选择器: {exc}")
+
     script = (
         "import tkinter as tk; from tkinter import filedialog; "
         "r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True); "

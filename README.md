@@ -20,7 +20,19 @@
 
 ## 快速启动
 
-### 方式一：Web 可视化界面（推荐）
+### 方式一：macOS 启动（推荐）
+
+首次运行会自动创建 `.venv` 并安装所需依赖，之后直接启动 Web 界面：
+
+- **终端运行**：
+  ```bash
+  ./start.sh
+  ```
+- **访达（Finder）双击运行**：直接双击 `start.command` 即可（若提示权限不足，先执行一次 `chmod +x start.sh start.command`）。
+
+浏览器会自动打开 `http://127.0.0.1:8765`。
+
+### 方式二：Windows 启动
 
 双击 `start.bat`，或在终端运行：
 
@@ -28,19 +40,20 @@
 .\.venv\Scripts\python.exe run.py serve --port 8765
 ```
 
-浏览器将自动打开 `http://127.0.0.1:8765`。
+### 方式三：命令行批量压缩（适合无人值守跑 60GB）
 
-### 方式二：命令行批量压缩（适合无人值守跑 60GB）
+**macOS / Linux：**
+```bash
+# 原地均衡压缩，并自动备份原文件到外接硬盘（8 进程并行）
+./.venv/bin/python -m pdf_resize compress "/Volumes/MySSD/PDFs" --preset balanced --inplace --backup "/Volumes/Backup/PDF_Backup" --workers 8
 
+# 先试跑前 10 个文件看看压缩效果
+./.venv/bin/python -m pdf_resize compress ~/Documents/PDFs --preset balanced --output ~/Documents/PDFs_test --limit 10
+```
+
+**Windows：**
 ```powershell
-# 示例：原地均衡压缩 D:\MyPDFs，自动备份原文件到 E:\PDF_Backup，使用 8 个并行进程
 .\.venv\Scripts\python.exe -m pdf_resize compress "D:\MyPDFs" --preset balanced --inplace --backup "E:\PDF_Backup" --workers 8
-
-# 示例：先试跑前 10 个文件看看压缩效果
-.\.venv\Scripts\python.exe -m pdf_resize compress "D:\MyPDFs" --preset balanced --output "D:\MyPDFs_test" --limit 10
-
-# 示例：自定义 120 DPI、JPEG 质量 65、转灰度
-.\.venv\Scripts\python.exe -m pdf_resize compress "D:\MyPDFs" --dpi 120 --quality 65 --grayscale --inplace
 ```
 
 ## 依赖安装（如需重新配置环境）

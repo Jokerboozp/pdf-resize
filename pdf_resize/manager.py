@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 import uuid
@@ -392,10 +393,11 @@ class JobManager:
         in_flight: dict[Future, dict[str, Any]] = {}
 
         try:
-            # max_tasks_per_child recycles worker processes periodically to avoid C-library memory retention over 3000+ PDFs
-            with ProcessPoolExecutor(
-                max_workers=max_workers, max_tasks_per_child=25
-            ) as executor:
+            # max_tasks_per_child recycles worker processes periodically (Python 3.11+)
+            pool_kwargs: dict[str, Any] = {"max_workers": max_workers}
+            if sys.version_info >= (3, 11):
+                pool_kwargs["max_tasks_per_child"] = 25
+            with ProcessPoolExecutor(**pool_kwargs) as executor:
                 while True:
                     # Fill sliding window if neither paused nor cancelled
                     if not rt.pause_event.is_set() and not rt.cancel_event.is_set():
