@@ -298,3 +298,74 @@ def test_fastapi_endpoints_scan_preview_and_upload_zip(tmp_path: Path) -> None:
     # Clean up test job record and uploaded files
     r_del = client.delete(f"/api/jobs/{job_id}?delete_upload_files=true")
     assert r_del.status_code == 200
+
+
+def test_multi_folder_scan_dedup_and_inplace_compression(tmp_path: Path) -> None:
+    """Test multiple separate folders (including same-named folders + overlapping nested folder)."""
+    dir_a = tmp_path / "disk1" / "Docs"
+    dir_a_sub = dir_a / "2024"
+    dir_b = tmp_path / "disk2" / "Docs"  # Same folder name "Docs" on another path
+    dir_a_sub.mkdir(parents=True)
+    dir_b.mkdir(parents=True)
+
+    f1 = _make_photo_pdf(dir_a / "one.pdf", pages=1)
+    f2 = _make_photo_pdf(dir_a_sub / "two.pdf", pages=1)
+    f3 = _make_photo_pdf(dir_b / "one.pdf", pages=1)  # Same filename as f1!
+    orig_sizes = (f1.stat().st_size, f2.stat().st_size, f3.stat().st_size)
+
+    client = TestClient(app)
+
+    # Scan with overlapping nested folder dir_a_sub — must deduplicate to 3 unique PDFs!
+    r_scan = client.post(
+        "/api/scan",
+        json={
+            "paths": [str(dir_a), str(dir_a_sub), str(dir_b)],
+            "recursive": True,
+            "skip_already_optimized": False,
+        },
+    )
+    assert r_scan.status_code == 200
+    scan_data = r_scan.json()
+    assert scan_data["total_files"] == 3
+    assert len(scan_data["folders"]) == 3
+
+    # Run in-place multi-folder job with backup dir (must not collide on Docs/one.pdf!)
+    backup_dir = tmp_path / "backups"
+    r_job = client.post(
+        "/api/jobs/local",
+        json={
+            "source_dirs": [str(dir_a), str(dir_b)],
+            "recursive": True,
+            "output_mode": "inplace",
+            "backup_dir": str(backup_dir),
+            "config": apply_preset("balanced", {"workers": 2, "skip_already_optimized": False}).model_dump(),
+        },
+    )
+    assert r_job.status_code == 200
+    job_id = r_job.json()["id"]
+
+    deadline = time.time() + 30
+    final_job = None
+    while time.time() < deadline:
+        final_job = client.get(f"/api/jobs/{job_id}").json()
+        if final_job["status"] in ("completed", "failed"):
+            break
+        time.sleep(0.2)
+
+    assert final_job is not None
+    assert final_job["status"] == "completed"
+    assert final_job["stats"]["total_files"] == 3
+    assert final_job["stats"]["done"] == 3
+    assert final_job["stats"]["failed"] == 0
+
+    # All 3 files compressed in-place at their original locations
+    assert f1.stat().st_size < orig_sizes[0]
+    assert f2.stat().st_size < orig_sizes[1]
+    assert f3.stat().st_size < orig_sizes[2]
+
+    # Backups preserved without overwriting each other despite identical folder name "Docs"
+    assert (backup_dir / "Docs" / "one.pdf").exists()
+    assert (backup_dir / "Docs" / "2024" / "two.pdf").exists()
+    assert (backup_dir / "Docs_2" / "one.pdf").exists()
+
+    client.delete(f"/api/jobs/{job_id}")

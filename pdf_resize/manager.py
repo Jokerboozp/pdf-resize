@@ -44,6 +44,145 @@ def _worker_compress(
     }
 
 
+def _make_unique_root_labels(roots: list[Path]) -> list[str]:
+    """Generate clean, collision-free folder prefix labels when scanning multiple root dirs."""
+    labels: list[str] = []
+    used: dict[str, int] = {}
+    for root in roots:
+        base = root.name or root.anchor.replace(":", "").replace("\\", "").replace("/", "") or "root"
+        count = used.get(base.lower(), 0)
+        if count == 0:
+            used[base.lower()] = 1
+            labels.append(base)
+        else:
+            used[base.lower()] = count + 1
+            labels.append(f"{base}_{count + 1}")
+    return labels
+
+
+def scan_pdf_directories(
+    root_dirs: list[str | Path],
+    *,
+    recursive: bool = True,
+    skip_smaller_than_kb: int = 0,
+    fingerprints: Optional[dict[str, tuple[int, float]]] = None,
+    limit_files: Optional[int] = None,
+) -> dict[str, Any]:
+    """Fast recursive scanner supporting one or multiple folders with deduplication."""
+    if not root_dirs:
+        raise ValueError("请至少提供一个有效的目录路径")
+
+    resolved_roots: list[Path] = []
+    seen_roots: set[str] = set()
+    for raw in root_dirs:
+        p = Path(raw).expanduser().resolve()
+        if not p.exists() or not p.is_dir():
+            raise ValueError(f"目录不存在或不可访问: {raw}")
+        key = str(p).lower() if os.name == "nt" else str(p)
+        if key not in seen_roots:
+            seen_roots.add(key)
+            resolved_roots.append(p)
+
+    multi_root = len(resolved_roots) > 1
+    root_labels = _make_unique_root_labels(resolved_roots)
+
+    files: list[dict[str, Any]] = []
+    seen_files: set[str] = set()
+    folder_summaries: list[dict[str, Any]] = []
+    total_bytes = 0
+    already_optimized_count = 0
+    too_small_count = 0
+    min_bytes = max(0, skip_smaller_than_kb) * 1024
+
+    for root, label in zip(resolved_roots, root_labels):
+        f_count = 0
+        f_bytes = 0
+        f_pending = 0
+
+        def _walk(current: Path) -> None:
+            nonlocal total_bytes, already_optimized_count, too_small_count
+            nonlocal f_count, f_bytes, f_pending
+            try:
+                with os.scandir(current) as it:
+                    entries = sorted(it, key=lambda e: e.name.lower())
+            except PermissionError:
+                return
+
+            for entry in entries:
+                if limit_files and len(files) >= limit_files:
+                    return
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if recursive:
+                            _walk(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        name_lower = entry.name.lower()
+                        if not name_lower.endswith(".pdf") or name_lower.endswith(TMP_SUFFIX):
+                            continue
+                        abs_path = str(Path(entry.path).resolve())
+                        dedup_key = abs_path.lower() if os.name == "nt" else abs_path
+                        if dedup_key in seen_files:
+                            continue
+                        seen_files.add(dedup_key)
+
+                        st = entry.stat(follow_symlinks=False)
+                        size = st.st_size
+                        mtime = st.st_mtime
+                        inner_rel = str(Path(abs_path).relative_to(root))
+                        rel_path = str(Path(label) / inner_rel) if multi_root else inner_rel
+
+                        status = "pending"
+                        if fingerprints:
+                            fp = fingerprints.get(abs_path.lower())
+                            if fp and fp[0] == size and abs(fp[1] - mtime) < 2.0:
+                                status = "skipped_already_done"
+                                already_optimized_count += 1
+                        if status == "pending" and min_bytes > 0 and size < min_bytes:
+                            status = "skipped_small"
+                            too_small_count += 1
+
+                        total_bytes += size
+                        f_count += 1
+                        f_bytes += size
+                        if status == "pending":
+                            f_pending += 1
+
+                        files.append(
+                            {
+                                "rel_path": rel_path,
+                                "src_path": abs_path,
+                                "orig_size": size,
+                                "orig_mtime": mtime,
+                                "status": status,
+                            }
+                        )
+                except OSError:
+                    continue
+
+        _walk(root)
+        folder_summaries.append(
+            {
+                "path": str(root),
+                "label": label,
+                "total_files": f_count,
+                "total_bytes": f_bytes,
+                "pending_count": f_pending,
+            }
+        )
+
+    return {
+        "root_dir": str(resolved_roots[0]),
+        "root_dirs": [str(r) for r in resolved_roots],
+        "folders": folder_summaries,
+        "total_files": len(files),
+        "total_bytes": total_bytes,
+        "already_optimized_count": already_optimized_count,
+        "too_small_count": too_small_count,
+        "pending_count": len(files) - already_optimized_count - too_small_count,
+        "files": files,
+    }
+
+
 def scan_pdf_directory(
     root_dir: str | Path,
     *,
@@ -52,75 +191,14 @@ def scan_pdf_directory(
     fingerprints: Optional[dict[str, tuple[int, float]]] = None,
     limit_files: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Fast recursive directory scanner using os.scandir for thousands of PDFs."""
-    root = Path(root_dir).resolve()
-    if not root.exists() or not root.is_dir():
-        raise ValueError(f"目录不存在或不可访问: {root_dir}")
-
-    files: list[dict[str, Any]] = []
-    total_bytes = 0
-    already_optimized_count = 0
-    too_small_count = 0
-    min_bytes = max(0, skip_smaller_than_kb) * 1024
-
-    def _walk(current: Path) -> None:
-        nonlocal total_bytes, already_optimized_count, too_small_count
-        try:
-            with os.scandir(current) as it:
-                entries = sorted(it, key=lambda e: e.name.lower())
-        except PermissionError:
-            return
-
-        for entry in entries:
-            if limit_files and len(files) >= limit_files:
-                return
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    if recursive:
-                        _walk(Path(entry.path))
-                elif entry.is_file(follow_symlinks=False):
-                    name_lower = entry.name.lower()
-                    if not name_lower.endswith(".pdf") or name_lower.endswith(TMP_SUFFIX):
-                        continue
-                    st = entry.stat(follow_symlinks=False)
-                    size = st.st_size
-                    mtime = st.st_mtime
-                    abs_path = str(Path(entry.path).resolve())
-                    rel_path = str(Path(abs_path).relative_to(root))
-
-                    status = "pending"
-                    if fingerprints:
-                        fp = fingerprints.get(abs_path.lower())
-                        if fp and fp[0] == size and abs(fp[1] - mtime) < 2.0:
-                            status = "skipped_already_done"
-                            already_optimized_count += 1
-                    if status == "pending" and min_bytes > 0 and size < min_bytes:
-                        status = "skipped_small"
-                        too_small_count += 1
-
-                    total_bytes += size
-                    files.append(
-                        {
-                            "rel_path": rel_path,
-                            "src_path": abs_path,
-                            "orig_size": size,
-                            "orig_mtime": mtime,
-                            "status": status,
-                        }
-                    )
-            except OSError:
-                continue
-
-    _walk(root)
-    return {
-        "root_dir": str(root),
-        "total_files": len(files),
-        "total_bytes": total_bytes,
-        "already_optimized_count": already_optimized_count,
-        "too_small_count": too_small_count,
-        "pending_count": len(files) - already_optimized_count - too_small_count,
-        "files": files,
-    }
+    """Backwards-compatible single-directory scanner wrapper."""
+    return scan_pdf_directories(
+        [root_dir],
+        recursive=recursive,
+        skip_smaller_than_kb=skip_smaller_than_kb,
+        fingerprints=fingerprints,
+        limit_files=limit_files,
+    )
 
 
 class _ActiveJobRuntime:
@@ -181,7 +259,8 @@ class JobManager:
     def create_local_job(
         self,
         *,
-        source_dir: str,
+        source_dir: Optional[str] = None,
+        source_dirs: Optional[list[str]] = None,
         output_mode: str,
         output_dir: Optional[str],
         backup_dir: Optional[str],
@@ -191,19 +270,27 @@ class JobManager:
         limit_files: Optional[int] = None,
         auto_start: bool = True,
     ) -> dict[str, Any]:
-        src_root = Path(source_dir).resolve()
-        if not src_root.exists() or not src_root.is_dir():
-            raise ValueError(f"源目录不存在: {source_dir}")
+        roots_input: list[str | Path] = []
+        if source_dirs:
+            roots_input.extend(source_dirs)
+        if source_dir and source_dir.strip():
+            roots_input.append(source_dir)
+        if not roots_input:
+            raise ValueError("请至少选择一个源目录")
 
         if output_mode == "output_dir":
             if not output_dir or not output_dir.strip():
                 raise ValueError("选择输出到新目录时，必须指定输出目录路径")
-            out_root = Path(output_dir).resolve()
+            out_root: Optional[Path] = Path(output_dir).expanduser().resolve()
             out_root.mkdir(parents=True, exist_ok=True)
         else:
-            out_root = src_root
+            out_root = None
 
-        bkp_root = Path(backup_dir).resolve() if backup_dir and backup_dir.strip() else None
+        bkp_root = (
+            Path(backup_dir).expanduser().resolve()
+            if backup_dir and backup_dir.strip()
+            else None
+        )
         if bkp_root:
             bkp_root.mkdir(parents=True, exist_ok=True)
 
@@ -212,26 +299,34 @@ class JobManager:
             if (config.skip_already_optimized and output_mode == "inplace")
             else None
         )
-        scan = scan_pdf_directory(
-            src_root,
+        scan = scan_pdf_directories(
+            roots_input,
             recursive=recursive,
             skip_smaller_than_kb=config.skip_smaller_than_kb,
             fingerprints=fingerprints,
             limit_files=limit_files,
         )
         if scan["total_files"] == 0:
-            raise ValueError("该目录下未找到任何 PDF 文件")
+            raise ValueError("所选目录下未找到任何 PDF 文件")
 
         job_id = uuid.uuid4().hex[:12]
-        job_name = name or f"{src_root.name} ({scan['total_files']} 个 PDF)"
+        resolved_dirs: list[str] = scan["root_dirs"]
+        if name:
+            job_name = name
+        elif len(resolved_dirs) == 1:
+            job_name = f"{Path(resolved_dirs[0]).name} ({scan['total_files']} 个 PDF)"
+        else:
+            job_name = f"{len(resolved_dirs)} 个目录合并 ({scan['total_files']} 个 PDF)"
+
+        source_dir_display = " ; ".join(resolved_dirs)
 
         self.storage.create_job(
             job_id=job_id,
             name=job_name,
             source_type="local_dir",
-            source_dir=str(src_root),
+            source_dir=source_dir_display,
             output_mode=output_mode,
-            output_dir=str(out_root) if output_mode == "output_dir" else None,
+            output_dir=str(out_root) if out_root else None,
             backup_dir=str(bkp_root) if bkp_root else None,
             config_dict=config.model_dump(),
             status="created",
@@ -240,7 +335,7 @@ class JobManager:
         bulk_rows: list[dict[str, Any]] = []
         for f in scan["files"]:
             rel = f["rel_path"]
-            dst_path = f["src_path"] if output_mode == "inplace" else str(out_root / rel)
+            dst_path = f["src_path"] if output_mode == "inplace" else str(out_root / rel)  # type: ignore[operator]
             bkp_path = str(bkp_root / rel) if (output_mode == "inplace" and bkp_root) else None
             bulk_rows.append(
                 {

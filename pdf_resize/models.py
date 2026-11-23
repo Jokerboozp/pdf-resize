@@ -117,21 +117,53 @@ def apply_preset(preset_name: str, overrides: Optional[dict] = None) -> Compress
 
 
 class ScanDirRequest(BaseModel):
-    path: str
+    path: Optional[str] = None
+    paths: list[str] = Field(default_factory=list)
     recursive: bool = True
     skip_smaller_than_kb: int = 0
     skip_already_optimized: bool = True
 
+    def resolved_paths(self) -> list[str]:
+        raw: list[str] = []
+        if self.paths:
+            raw.extend(self.paths)
+        if self.path and self.path.strip():
+            raw.append(self.path)
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for p in raw:
+            s = p.strip().strip('"').strip("'")
+            if s and s not in seen:
+                seen.add(s)
+                cleaned.append(s)
+        return cleaned
+
 
 class CreateLocalJobRequest(BaseModel):
     name: Optional[str] = None
-    source_dir: str
+    source_dir: Optional[str] = None
+    source_dirs: list[str] = Field(default_factory=list)
     recursive: bool = True
     output_mode: OutputMode = "inplace"
     output_dir: Optional[str] = None
     backup_dir: Optional[str] = None
     config: CompressionConfig = Field(default_factory=CompressionConfig)
     limit_files: Optional[int] = Field(default=None, ge=1)
+
+    def resolved_source_dirs(self) -> list[str]:
+        raw: list[str] = []
+        if self.source_dirs:
+            raw.extend(self.source_dirs)
+        if self.source_dir and self.source_dir.strip():
+            raw.append(self.source_dir)
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for p in raw:
+            s = p.strip().strip('"').strip("'")
+            if s and s not in seen:
+                seen.add(s)
+                cleaned.append(s)
+        return cleaned
 
 
 class CreateUploadJobRequest(BaseModel):

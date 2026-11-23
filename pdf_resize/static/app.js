@@ -4,6 +4,8 @@
     sourceMode: "local", // local | upload
     outputMode: "inplace", // inplace | output_dir
     selectedPreset: "balanced",
+    localSourceDirs: [], // string[]
+    folderScanStats: {}, // path -> { total_files, total_bytes, pending_count }
     uploadQueue: [], // [{ file, relPath }]
     activeJobId: null,
     activeJobDetail: null,
@@ -13,6 +15,7 @@
     fileSort: "id:asc",
     filePage: 1,
     folderModalTargetInput: null,
+    folderModalAppendSource: false,
     folderCurrentPath: "",
     folderParentPath: null,
   };
@@ -233,11 +236,99 @@
     }
   }
 
+  // ---------- MULTI-FOLDER SOURCE LIST ----------
+  function addLocalSourceDirs(rawPaths) {
+    let added = 0;
+    for (const raw of rawPaths) {
+      const cleaned = (raw || "").trim().replace(/^["']|["']$/g, "");
+      if (!cleaned) continue;
+      if (!state.localSourceDirs.includes(cleaned)) {
+        state.localSourceDirs.push(cleaned);
+        added++;
+      }
+    }
+    renderLocalSourceDirs();
+    return added;
+  }
+
+  function removeLocalSourceDir(idx) {
+    const [removed] = state.localSourceDirs.splice(idx, 1);
+    if (removed) delete state.folderScanStats[removed];
+    renderLocalSourceDirs();
+  }
+
+  function collectLocalSourceDirs() {
+    const inputVal = $("localSourceDir").value.trim();
+    if (inputVal) {
+      // Allow pasting multiple paths separated by newlines
+      const parts = inputVal.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      addLocalSourceDirs(parts);
+      $("localSourceDir").value = "";
+    }
+    return [...state.localSourceDirs];
+  }
+
+  function renderLocalSourceDirs() {
+    const count = state.localSourceDirs.length;
+    $("clearSourceDirsBtn").classList.toggle("hidden", count === 0);
+    $("sourceDirsCount").textContent =
+      count > 0
+        ? `已添加 ${count} 个源文件夹（支持继续追加，自动递归子目录与去重）`
+        : "已添加 0 个文件夹（可点击「浏览添加」「系统多选」，或直接粘贴路径回车添加）";
+
+    const list = $("sourceDirsList");
+    list.innerHTML = "";
+    state.localSourceDirs.forEach((dirPath, idx) => {
+      const st = state.folderScanStats[dirPath];
+      const metaText = st ? `${st.total_files.toLocaleString()} 个 PDF · ${fmtSize(st.total_bytes)}` : "";
+      const row = document.createElement("div");
+      row.className = "source-dir-item";
+      row.innerHTML = `
+        <span class="source-dir-path" title="${dirPath}">📁 ${dirPath}</span>
+        ${metaText ? `<span class="source-dir-meta">${metaText}</span>` : ""}
+        <button type="button" class="source-dir-remove" title="移除该文件夹">✕</button>
+      `;
+      row.querySelector(".source-dir-remove").addEventListener("click", () => removeLocalSourceDir(idx));
+      list.appendChild(row);
+    });
+  }
+
+  $("addSourceDirBtn").addEventListener("click", () => {
+    const val = $("localSourceDir").value.trim();
+    if (!val) {
+      toast("请先输入或粘贴文件夹路径", "error");
+      return;
+    }
+    const parts = val.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    const added = addLocalSourceDirs(parts);
+    $("localSourceDir").value = "";
+    if (added > 0) toast(`已添加 ${added} 个文件夹到列表`, "success");
+  });
+
+  $("localSourceDir").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      $("addSourceDirBtn").click();
+    }
+  });
+
+  $("clearSourceDirsBtn").addEventListener("click", () => {
+    state.localSourceDirs = [];
+    state.folderScanStats = {};
+    renderLocalSourceDirs();
+    $("scanResultBox").classList.add("hidden");
+  });
+
   // ---------- FOLDER BROWSER MODAL ----------
-  async function openFolderModal(targetInputEl) {
+  async function openFolderModal(targetInputEl, appendToSourceList = false) {
     state.folderModalTargetInput = targetInputEl;
+    state.folderModalAppendSource = appendToSourceList;
+    $("confirmFolderBtn").textContent = appendToSourceList ? "添加当前目录到列表" : "选择当前目录";
     $("folderModal").classList.remove("hidden");
-    await loadFolderListing(targetInputEl.value.trim());
+    const initPath = appendToSourceList
+      ? $("localSourceDir").value.trim()
+      : (targetInputEl?.value || "").trim();
+    await loadFolderListing(initPath);
   }
 
   async function loadFolderListing(path) {
@@ -249,7 +340,7 @@
       $("folderUpBtn").disabled = data.parent === null;
       $("folderPdfHint").textContent = data.current
         ? `当前目录直接包含 ${data.pdf_count_here || 0} 个 PDF 文件（子目录将按需递归扫描）`
-        : "请选择磁盘分区";
+        : "请选择磁盘或常用文件夹";
 
       const list = $("folderList");
       list.innerHTML = "";
@@ -269,17 +360,22 @@
     }
   }
 
-  $("browseSourceBtn").addEventListener("click", () => openFolderModal($("localSourceDir")));
-  $("browseBackupBtn").addEventListener("click", () => openFolderModal($("localBackupDir")));
-  $("browseOutputBtn").addEventListener("click", () => openFolderModal($("localOutputDir")));
-  $("browseUploadOutBtn").addEventListener("click", () => openFolderModal($("uploadOutputDir")));
+  $("browseSourceBtn").addEventListener("click", () => openFolderModal($("localSourceDir"), true));
+  $("browseBackupBtn").addEventListener("click", () => openFolderModal($("localBackupDir"), false));
+  $("browseOutputBtn").addEventListener("click", () => openFolderModal($("localOutputDir"), false));
+  $("browseUploadOutBtn").addEventListener("click", () => openFolderModal($("uploadOutputDir"), false));
   $("folderUpBtn").addEventListener("click", () => {
     if (state.folderParentPath !== null) loadFolderListing(state.folderParentPath);
   });
   $("folderGoBtn").addEventListener("click", () => loadFolderListing($("folderCurrentInput").value.trim()));
   $("confirmFolderBtn").addEventListener("click", () => {
-    if (state.folderModalTargetInput && state.folderCurrentPath) {
-      state.folderModalTargetInput.value = state.folderCurrentPath;
+    if (state.folderCurrentPath) {
+      if (state.folderModalAppendSource) {
+        const added = addLocalSourceDirs([state.folderCurrentPath]);
+        if (added > 0) toast("已添加文件夹，可继续添加更多目录", "success");
+      } else if (state.folderModalTargetInput) {
+        state.folderModalTargetInput.value = state.folderCurrentPath;
+      }
     }
     $("folderModal").classList.add("hidden");
   });
@@ -289,9 +385,11 @@
   $("nativePickSourceBtn").addEventListener("click", async () => {
     try {
       $("nativePickSourceBtn").disabled = true;
-      const res = await api("/api/fs/pick-folder", { method: "POST" });
-      if (res.path) {
-        $("localSourceDir").value = res.path;
+      const res = await api("/api/fs/pick-folder?multiple=true", { method: "POST" });
+      const picked = res.paths && res.paths.length ? res.paths : res.path ? [res.path] : [];
+      if (picked.length) {
+        const added = addLocalSourceDirs(picked);
+        if (added > 0) toast(`已添加 ${added} 个文件夹`, "success");
         scanLocalDirectory();
       }
     } catch (err) {
@@ -303,9 +401,9 @@
 
   // ---------- SCAN DIRECTORY ----------
   async function scanLocalDirectory() {
-    const path = $("localSourceDir").value.trim();
-    if (!path) {
-      toast("请先输入或选择 PDF 文件夹路径", "error");
+    const paths = collectLocalSourceDirs();
+    if (!paths.length) {
+      toast("请先添加或输入至少一个 PDF 文件夹路径", "error");
       return;
     }
     $("scanDirBtn").disabled = true;
@@ -316,12 +414,22 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          path,
+          paths,
           recursive: $("localRecursive").checked,
           skip_smaller_than_kb: cfg.skip_smaller_than_kb,
           skip_already_optimized: cfg.skip_already_optimized,
         }),
       });
+      // Update canonical resolved paths and per-folder stats
+      if (Array.isArray(data.folders) && data.folders.length) {
+        state.localSourceDirs = data.folders.map((f) => f.path);
+        state.folderScanStats = {};
+        data.folders.forEach((f) => {
+          state.folderScanStats[f.path] = f;
+        });
+        renderLocalSourceDirs();
+      }
+
       $("scanTotalFiles").textContent = data.total_files.toLocaleString();
       $("scanTotalBytes").textContent = fmtSize(data.total_bytes);
       $("scanPendingFiles").textContent = data.pending_count.toLocaleString();
@@ -336,7 +444,10 @@
         sel.appendChild(opt);
       });
       $("scanResultBox").classList.remove("hidden");
-      toast(`扫描完成：共发现 ${data.total_files} 个 PDF（${fmtSize(data.total_bytes)}）`, "success");
+      toast(
+        `扫描完成：${data.folders?.length || paths.length} 个目录共发现 ${data.total_files} 个 PDF（${fmtSize(data.total_bytes)}）`,
+        "success"
+      );
     } catch (err) {
       toast(err.message, "error");
     } finally {
@@ -459,9 +570,9 @@
   });
 
   async function startLocalJob() {
-    const sourceDir = $("localSourceDir").value.trim();
-    if (!sourceDir) {
-      toast("请先填写或选择本地 PDF 目录", "error");
+    const sourceDirs = collectLocalSourceDirs();
+    if (!sourceDirs.length) {
+      toast("请先添加或输入至少一个本地 PDF 文件夹", "error");
       return;
     }
     const outputDir = $("localOutputDir").value.trim() || null;
@@ -475,7 +586,7 @@
 
     if (state.outputMode === "inplace" && !backupDir) {
       const ok = window.confirm(
-        "即将以【原地覆盖】模式直接优化源目录中的 PDF 文件（未设置备份目录）。\n\n程序已启用同盘原子写入与页数完整性校验，变大文件会自动放弃覆盖。\n确定开始吗？"
+        `即将以【原地覆盖】模式直接优化 ${sourceDirs.length} 个目录中的 PDF 文件（未设置备份目录）。\n\n程序已启用同盘原子写入与页数完整性校验，变大文件会自动放弃覆盖。\n确定开始吗？`
       );
       if (!ok) return;
     }
@@ -487,7 +598,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: $("localJobName").value.trim() || null,
-          source_dir: sourceDir,
+          source_dirs: sourceDirs,
           recursive: $("localRecursive").checked,
           output_mode: state.outputMode,
           output_dir: outputDir,

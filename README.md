@@ -44,8 +44,8 @@
 
 **macOS / Linux：**
 ```bash
-# 原地均衡压缩，并自动备份原文件到外接硬盘（8 进程并行）
-./.venv/bin/python -m pdf_resize compress "/Volumes/MySSD/PDFs" --preset balanced --inplace --backup "/Volumes/Backup/PDF_Backup" --workers 8
+# 支持一次传入多个不同文件夹（含嵌套子目录，自动去重），原地均衡压缩并备份
+./.venv/bin/python -m pdf_resize compress ~/Documents/论文 ~/Downloads/扫描件 "/Volumes/MySSD/PDF库" --preset balanced --inplace --backup "/Volumes/Backup/PDF_Backup" --workers 8
 
 # 先试跑前 10 个文件看看压缩效果
 ./.venv/bin/python -m pdf_resize compress ~/Documents/PDFs --preset balanced --output ~/Documents/PDFs_test --limit 10

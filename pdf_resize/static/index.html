@@ -44,16 +44,25 @@
             <!-- MODE A: LOCAL DIRECTORY -->
             <div id="sourceLocalPanel">
               <div class="tip-banner">
-                <strong>零拷贝极速模式：</strong>直接读取本地磁盘目录，无需通过浏览器上传 60GB 数据，支持<strong>直接原地优化原有 PDF</strong>、断点续传与失败重试。
+                <strong>零拷贝极速模式：</strong>支持<strong>同时添加多个不同文件夹</strong>（含外接硬盘）并自动递归扫描所有子目录、自动去重，支持<strong>直接原地优化原有 PDF</strong>、断点续传与失败重试。
               </div>
 
               <div class="form-group">
-                <label for="localSourceDir">PDF 所在文件夹路径</label>
+                <label for="localSourceDir">添加 PDF 文件夹（支持添加多个不同目录，自动递归子目录）</label>
                 <div class="input-row">
-                  <input id="localSourceDir" type="text" placeholder="例如：/Users/你的名字/Documents/PDF库 或 D:\Documents\PDF库" />
-                  <button class="btn btn-secondary" id="browseSourceBtn">浏览目录</button>
-                  <button class="btn btn-secondary" id="nativePickSourceBtn" title="调用系统原生文件夹选择弹窗">系统选择</button>
+                  <input id="localSourceDir" type="text" placeholder="输入或粘贴路径后回车添加，如 /Volumes/SSD/PDF库" />
+                  <button class="btn btn-secondary" id="addSourceDirBtn" title="将输入框路径添加到待处理目录列表">添加</button>
+                  <button class="btn btn-secondary" id="browseSourceBtn">浏览添加</button>
+                  <button class="btn btn-secondary" id="nativePickSourceBtn" title="macOS 访达支持按住 Command(⌘) 一次多选多个文件夹">系统多选</button>
                 </div>
+              </div>
+
+              <div id="sourceDirsBox" class="source-dirs-box">
+                <div class="source-dirs-head">
+                  <span id="sourceDirsCount" class="text-muted small-text">已添加 0 个文件夹（未添加到列表时，扫描将直接使用上方输入框路径）</span>
+                  <button class="btn btn-ghost btn-sm hidden" id="clearSourceDirsBtn">清空目录</button>
+                </div>
+                <div id="sourceDirsList" class="source-dirs-list"></div>
               </div>
 
               <div class="inline-options">

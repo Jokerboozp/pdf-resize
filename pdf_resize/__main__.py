@@ -57,9 +57,9 @@ def cmd_compress(args: argparse.Namespace) -> None:
 
     storage = Storage()
     manager = JobManager(storage)
-    print(f"正在扫描目录: {args.source} ...")
+    print(f"正在扫描 {len(args.sources)} 个目录: {', '.join(args.sources)} ...")
     job = manager.create_local_job(
-        source_dir=args.source,
+        source_dirs=args.sources,
         output_mode=output_mode,
         output_dir=args.output,
         backup_dir=args.backup,
@@ -108,8 +108,8 @@ def main() -> None:
     p_serve.add_argument("--port", type=int, default=8765)
     p_serve.add_argument("--no-browser", action="store_true")
 
-    p_comp = sub.add_parser("compress", help="命令行批量压缩本地 PDF 目录")
-    p_comp.add_argument("source", help="PDF 源目录路径")
+    p_comp = sub.add_parser("compress", help="命令行批量压缩本地 PDF 目录（支持一次传入多个目录）")
+    p_comp.add_argument("sources", nargs="+", help="一个或多个 PDF 源目录路径")
     p_comp.add_argument("--preset", choices=list(PRESETS.keys()), default="balanced", help="压缩预设")
     p_comp.add_argument("--dpi", type=int, default=None, help="自定义目标图片 DPI (50-600)")
     p_comp.add_argument("--quality", type=int, default=None, help="自定义 JPEG 质量 (15-95)")

@@ -16,7 +16,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .manager import JobManager, scan_pdf_directory
+from .manager import JobManager, scan_pdf_directories
 from .models import (
     PRESETS,
     CompressionConfig,
@@ -145,25 +145,37 @@ def fs_list(path: str = Query(default="")) -> dict[str, Any]:
 
 
 @app.post("/api/fs/pick-folder")
-def fs_pick_folder() -> dict[str, Any]:
-    """Open a native OS folder selection dialog in an isolated subprocess."""
+def fs_pick_folder(multiple: bool = Query(default=False)) -> dict[str, Any]:
+    """Open a native OS folder selection dialog (supports multi-select on macOS)."""
     if sys.platform == "darwin":
         try:
+            if multiple:
+                script = (
+                    'set chosenFolders to choose folder with prompt "可按住 Command(⌘) 多选多个包含 PDF 的文件夹" '
+                    "with multiple selections allowed\n"
+                    'set out to ""\n'
+                    "repeat with f in chosenFolders\n"
+                    "  set out to out & POSIX path of f & linefeed\n"
+                    "end repeat\n"
+                    "return out"
+                )
+            else:
+                script = 'POSIX path of (choose folder with prompt "选择包含 PDF 的文件夹")'
+
             proc = subprocess.run(
-                [
-                    "osascript",
-                    "-e",
-                    'POSIX path of (choose folder with prompt "选择包含 PDF 的文件夹")',
-                ],
+                ["osascript", "-e", script],
                 capture_output=True,
                 text=True,
                 timeout=120,
             )
             if proc.returncode != 0:
-                # User clicked Cancel (-128)
-                return {"path": None}
-            selected = proc.stdout.strip().rstrip("/") or "/"
-            return {"path": selected}
+                return {"path": None, "paths": []}
+            paths = [
+                line.strip().rstrip("/") or "/"
+                for line in proc.stdout.splitlines()
+                if line.strip()
+            ]
+            return {"path": paths[0] if paths else None, "paths": paths}
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"无法打开 macOS 文件夹选择器: {exc}")
 
@@ -181,18 +193,25 @@ def fs_pick_folder() -> dict[str, Any]:
             timeout=120,
         )
         selected = proc.stdout.strip()
-        return {"path": selected or None}
+        return {"path": selected or None, "paths": [selected] if selected else []}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"无法打开系统文件夹选择器: {exc}")
 
 
 @app.post("/api/fs/open-folder")
 def fs_open_folder(payload: dict[str, str]) -> dict[str, Any]:
-    path = payload.get("path", "").strip()
-    if not path:
+    raw_path = payload.get("path", "").strip()
+    if not raw_path:
         raise HTTPException(status_code=400, detail="路径为空")
-    p = Path(path).resolve()
-    if not p.exists():
+    # If multi-folder display string "dirA ; dirB", open the first existing folder
+    candidates = [s.strip() for s in raw_path.split(" ; ") if s.strip()]
+    p = None
+    for c in candidates:
+        cand = Path(c).expanduser().resolve()
+        if cand.exists():
+            p = cand
+            break
+    if p is None:
         raise HTTPException(status_code=404, detail="路径不存在")
     target = p if p.is_dir() else p.parent
     try:
@@ -209,10 +228,13 @@ def fs_open_folder(payload: dict[str, str]) -> dict[str, Any]:
 
 @app.post("/api/scan")
 def api_scan(req: ScanDirRequest) -> dict[str, Any]:
+    paths = req.resolved_paths()
+    if not paths:
+        raise HTTPException(status_code=400, detail="请至少添加一个目录路径")
     try:
         fps = storage.get_all_fingerprints() if req.skip_already_optimized else None
-        res = scan_pdf_directory(
-            req.path,
+        res = scan_pdf_directories(
+            paths,
             recursive=req.recursive,
             skip_smaller_than_kb=req.skip_smaller_than_kb,
             fingerprints=fps,
@@ -220,10 +242,12 @@ def api_scan(req: ScanDirRequest) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Return summary + largest 20 sample files (don't ship 10,000 rows in one JSON response)
+    # Return summary + per-folder stats + largest 20 sample files
     samples = sorted(res["files"], key=lambda x: x["orig_size"], reverse=True)[:20]
     return {
         "root_dir": res["root_dir"],
+        "root_dirs": res["root_dirs"],
+        "folders": res["folders"],
         "total_files": res["total_files"],
         "total_bytes": res["total_bytes"],
         "already_optimized_count": res["already_optimized_count"],
@@ -285,9 +309,12 @@ def api_preview_image(token: str, side: str) -> FileResponse:
 
 @app.post("/api/jobs/local")
 def api_create_local_job(req: CreateLocalJobRequest) -> dict[str, Any]:
+    source_dirs = req.resolved_source_dirs()
+    if not source_dirs:
+        raise HTTPException(status_code=400, detail="请至少添加一个源目录")
     try:
         return manager.create_local_job(
-            source_dir=req.source_dir,
+            source_dirs=source_dirs,
             output_mode=req.output_mode,
             output_dir=req.output_dir,
             backup_dir=req.backup_dir,
