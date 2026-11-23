@@ -11,9 +11,10 @@ import pymupdf
 
 from .compressor import compress_pdf_file
 from .models import CompressionConfig
+from .paths import get_data_dir
 
 
-PREVIEW_ROOT = Path(__file__).resolve().parent.parent / "data" / "previews"
+PREVIEW_ROOT = get_data_dir() / "previews"
 
 
 def _cleanup_old_previews(max_keep: int = 12, max_age_sec: int = 1800) -> None:

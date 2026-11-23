@@ -444,8 +444,14 @@
   $("nativePickSourceBtn").addEventListener("click", async () => {
     try {
       $("nativePickSourceBtn").disabled = true;
-      const res = await api("/api/fs/pick-folder?multiple=true", { method: "POST" });
-      const picked = res.paths && res.paths.length ? res.paths : res.path ? [res.path] : [];
+      let picked = [];
+      if (window.pywebview?.api?.pick_folders) {
+        const res = await window.pywebview.api.pick_folders(true);
+        picked = Array.isArray(res) ? res : [];
+      } else {
+        const res = await api("/api/fs/pick-folder?multiple=true", { method: "POST" });
+        picked = res.paths && res.paths.length ? res.paths : res.path ? [res.path] : [];
+      }
       if (picked.length) {
         const added = addLocalSourceDirs(picked);
         if (added > 0) toast(`已添加 ${added} 个文件夹`, "success");
@@ -1239,8 +1245,33 @@
     toast(`已清空 ${res.removed} 条历史跳过指纹`, "success");
   });
 
+  function initDesktopBridge() {
+    const btn = $("openInBrowserBtn");
+    if (!btn) return;
+    if (window.pywebview?.api?.open_in_browser) {
+      btn.classList.remove("hidden");
+    }
+    btn.addEventListener("click", async () => {
+      try {
+        if (window.pywebview?.api?.open_in_browser) {
+          await window.pywebview.api.open_in_browser();
+        }
+      } catch (err) {
+        toast(err.message || "打开浏览器失败", "error");
+      }
+    });
+  }
+
+  window.addEventListener("pywebviewready", () => {
+    const btn = $("openInBrowserBtn");
+    if (btn && window.pywebview?.api?.open_in_browser) {
+      btn.classList.remove("hidden");
+    }
+  });
+
   // ---------- INIT ----------
   async function init() {
+    initDesktopBridge();
     try {
       const sys = await api("/api/system");
       state.system = sys;

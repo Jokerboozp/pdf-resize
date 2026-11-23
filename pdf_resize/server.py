@@ -27,12 +27,12 @@ from .models import (
     ScanDirRequest,
     default_workers,
 )
+from .paths import get_data_dir, get_static_dir
 from .preview import get_preview_image_path, run_single_preview
 from .storage import Storage
 
-BASE_DIR = Path(__file__).resolve().parent
-STATIC_DIR = BASE_DIR / "static"
-DATA_DIR = BASE_DIR.parent / "data"
+STATIC_DIR = get_static_dir()
+DATA_DIR = get_data_dir()
 UPLOAD_ROOT = DATA_DIR / "uploads"
 
 storage = Storage(DATA_DIR / "jobs.db")

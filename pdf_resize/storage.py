@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "jobs.db"
+from .paths import get_data_dir
+
+
+DEFAULT_DB_PATH = get_data_dir() / "jobs.db"
 
 
 class Storage:

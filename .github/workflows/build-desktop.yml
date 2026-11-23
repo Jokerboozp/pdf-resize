@@ -1,0 +1,170 @@
+name: Build Desktop Apps (Windows & macOS)
+
+on:
+  push:
+    branches: [master, main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Windows x64 (.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pywebview pytest httpx
+
+      - name: Run unit tests
+        run: pytest -v
+
+      - name: Generate Windows icon
+        run: python scripts/make_icon.py
+
+      - name: Build standalone PDF Resize.exe
+        run: pyinstaller --noconfirm --clean "PDF Resize.spec"
+
+      - name: Smoke test frozen Windows .exe (HTTP + ProcessPoolExecutor)
+        shell: python
+        run: |
+          import io, json, os, shutil, subprocess, tempfile, time, urllib.request
+          from pathlib import Path
+          import pymupdf
+          from PIL import Image
+
+          exe = Path("dist/PDF Resize.exe").resolve()
+          assert exe.exists(), "dist/PDF Resize.exe was not built"
+          tmp = Path(tempfile.mkdtemp(prefix="pdfresize_win_e2e_"))
+          try:
+              src_dir, out_dir, data_dir = tmp / "pdfs", tmp / "out", tmp / "appdata"
+              src_dir.mkdir()
+              doc = pymupdf.open()
+              page = doc.new_page(width=595, height=842)
+              page.insert_text((50, 50), "Windows EXE E2E Test", fontsize=16)
+              img = Image.merge("RGB", (
+                  Image.effect_noise((1400, 1000), 60),
+                  Image.effect_noise((1400, 1000), 50),
+                  Image.effect_noise((1400, 1000), 40),
+              ))
+              buf = io.BytesIO()
+              img.save(buf, format="JPEG", quality=96)
+              page.insert_image(pymupdf.Rect(40, 80, 555, 780), stream=buf.getvalue())
+              pdf_path = src_dir / "sample.pdf"
+              doc.save(str(pdf_path), deflate=True)
+              doc.close()
+              orig_size = pdf_path.stat().st_size
+
+              port = 18771
+              env = dict(os.environ, PDF_RESIZE_DATA_DIR=str(data_dir))
+              proc = subprocess.Popen([str(exe), "--port", str(port), "--self-test", "30"], env=env)
+              try:
+                  base = f"http://127.0.0.1:{port}"
+                  for _ in range(150):
+                      if proc.poll() is not None:
+                          raise RuntimeError(f"EXE exited early: {proc.returncode}")
+                      try:
+                          with urllib.request.urlopen(f"{base}/api/system", timeout=1) as r:
+                              if r.status == 200:
+                                  break
+                      except Exception:
+                          time.sleep(0.2)
+                  else:
+                      raise RuntimeError("EXE backend did not start in time")
+
+                  req = urllib.request.Request(
+                      f"{base}/api/jobs/local",
+                      data=json.dumps({
+                          "source_dirs": [str(src_dir)],
+                          "output_mode": "output_dir",
+                          "output_dir": str(out_dir),
+                          "recursive": True,
+                      }).encode(),
+                      headers={"Content-Type": "application/json"},
+                      method="POST",
+                  )
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      job_id = json.loads(r.read().decode())["id"]
+
+                  for _ in range(150):
+                      with urllib.request.urlopen(f"{base}/api/jobs/{job_id}", timeout=5) as r:
+                          detail = json.loads(r.read().decode())
+                      if detail["status"] in ("completed", "failed", "cancelled"):
+                          break
+                      time.sleep(0.2)
+                  assert detail["status"] == "completed", detail
+                  out_pdf = out_dir / "sample.pdf"
+                  assert out_pdf.exists() and out_pdf.stat().st_size < orig_size * 0.6
+                  print(f"Windows EXE E2E OK: {orig_size} -> {out_pdf.stat().st_size}")
+              finally:
+                  proc.terminate()
+                  proc.wait(timeout=10)
+          finally:
+              shutil.rmtree(tmp, ignore_errors=True)
+
+      - name: Rename artifact for distribution
+        shell: pwsh
+        run: Copy-Item "dist/PDF Resize.exe" "dist/PDF-Resize-Windows-x64.exe"
+
+      - name: Upload Windows .exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDF-Resize-Windows-x64
+          path: dist/PDF-Resize-Windows-x64.exe
+
+  build-macos:
+    name: macOS arm64 (.dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pywebview pytest httpx
+
+      - name: Run unit tests
+        run: pytest -v
+
+      - name: Build macOS .app and .dmg
+        run: PYTHON_BIN="$(which python)" ./build_mac_app.sh
+
+      - name: Upload macOS .dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDF-Resize-macOS-arm64
+          path: dist/PDF-Resize-macOS-*.dmg
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/PDF-Resize-Windows-x64/PDF-Resize-Windows-x64.exe
+            artifacts/PDF-Resize-macOS-arm64/PDF-Resize-macOS-*.dmg

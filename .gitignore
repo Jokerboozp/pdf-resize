@@ -5,3 +5,7 @@ __pycache__/
 data/
 .pytest_cache/
 *.log
+build/
+dist/
+*.dmg
+.DS_Store

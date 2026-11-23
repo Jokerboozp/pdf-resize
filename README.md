@@ -20,7 +20,15 @@
 
 ## 快速启动
 
-### 方式一：macOS 启动（推荐）
+### 方式一：独立桌面 App（零依赖，支持 macOS & Windows，推荐）
+
+无需安装 Python 或任何第三方依赖，直接双击独立应用即可运行：
+
+- **macOS**：直接双击 `dist/PDF Resize.app`，或打开 `dist/PDF-Resize-macOS-arm64.dmg` 拖入「应用程序」；自行重新打包执行 `./build_mac_app.sh`。
+- **Windows**：直接双击独立单文件 `PDF-Resize-Windows-x64.exe`（基于系统内置 Edge WebView2，所有数据保存在 `%LOCALAPPDATA%\PDF Resize`）；在 Windows 本机自行打包只需双击 `build_win_exe.bat`。
+- **云端自动构建（推荐跨平台获取）**：仓库已配置 `.github/workflows/build-desktop.yml`，每次推送到 `master` 或打 `v*` 标签会自动在 GitHub Actions 云端同时构建并验证 **Windows `.exe`** 与 **macOS `.dmg`**，可在仓库 **Actions / Releases** 页面直接下载。
+
+### 方式二：macOS 源码脚本启动
 
 首次运行会自动创建 `.venv` 并安装所需依赖，之后直接启动 Web 界面：
 
