@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 import uuid
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
@@ -21,6 +22,7 @@ def _worker_compress(
     config_dict: dict[str, Any],
     inplace: bool,
     backup_path: Optional[str],
+    image_threads: int = 1,
 ) -> dict[str, Any]:
     """Top-level picklable worker function for ProcessPoolExecutor."""
     cfg = CompressionConfig(**config_dict)
@@ -30,6 +32,7 @@ def _worker_compress(
         cfg,
         inplace=inplace,
         backup_path=backup_path,
+        image_threads=image_threads,
     )
     return {
         "status": res.status,
@@ -482,7 +485,16 @@ class JobManager:
         cfg_dict = job["config"]
         cfg = CompressionConfig(**cfg_dict)
         inplace = job["output_mode"] == "inplace"
-        max_workers = max(1, min(cfg.workers, os.cpu_count() or 8))
+        cpu_count = os.cpu_count() or 8
+        stats0 = self.storage.get_job_stats(job_id)
+        pending0 = max(1, stats0.get("pending", 1))
+        if job["source_type"] == "local_dir":
+            max_workers = max(1, min(cfg.workers, cpu_count, pending0))
+        else:
+            max_workers = max(1, min(cfg.workers, cpu_count))
+        # When processing only a few large PDFs, allow intra-file image threading
+        effective_parallel = max(1, min(max_workers, pending0))
+        per_file_threads = max(1, min(4, cpu_count // effective_parallel))
         max_inflight = max_workers * 2
 
         in_flight: dict[Future, dict[str, Any]] = {}
@@ -507,6 +519,7 @@ class JobManager:
                                     cfg_dict,
                                     inplace,
                                     rec.get("backup_path"),
+                                    per_file_threads,
                                 )
                                 in_flight[fut] = rec
                                 with rt.lock:
@@ -587,6 +600,7 @@ class JobManager:
                 self.storage.update_job_status(job_id, "completed", set_finished=True)
 
         except Exception:
+            traceback.print_exc()
             self.storage.reset_job_processing_to_pending(job_id)
             self.storage.update_job_status(job_id, "failed", set_finished=True)
         finally:

@@ -369,3 +369,37 @@ def test_multi_folder_scan_dedup_and_inplace_compression(tmp_path: Path) -> None
     assert (backup_dir / "Docs_2" / "one.pdf").exists()
 
     client.delete(f"/api/jobs/{job_id}")
+
+
+def test_shared_resources_pdf_fast_compression_and_preview_upload(tmp_path: Path) -> None:
+    """Verify cache-busting headers and fast compression + preview upload endpoint."""
+    src = _make_photo_pdf(tmp_path / "album.pdf", pages=4, img_size=(1600, 1200))
+    orig_size = src.stat().st_size
+
+    out = tmp_path / "album_out.pdf"
+    t0 = time.perf_counter()
+    res = compress_pdf_file(src, out, apply_preset("balanced"), inplace=False, image_threads=2)
+    elapsed = time.perf_counter() - t0
+    assert res.status == "done"
+    assert res.images_optimized >= 4
+    assert res.new_size < orig_size * 0.6
+    assert elapsed < 10.0
+
+    client = TestClient(app)
+    r_home = client.get("/")
+    assert r_home.status_code == 200
+    assert "no-store" in r_home.headers.get("cache-control", "")
+    assert "/static/app.js?v=" in r_home.text
+
+    with src.open("rb") as fh:
+        r_prev = client.post(
+            "/api/preview/upload",
+            files={"file": ("album.pdf", fh, "application/pdf")},
+            data={"config_json": apply_preset("balanced").model_dump_json(), "page": "0"},
+        )
+    assert r_prev.status_code == 200
+    pdata = r_prev.json()
+    assert pdata["status"] == "done"
+    assert pdata["saved_bytes"] > 0
+    assert client.get(pdata["orig_image_url"]).status_code == 200
+    assert client.get(pdata["comp_image_url"]).status_code == 200

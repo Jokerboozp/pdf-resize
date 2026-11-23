@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -19,6 +21,7 @@ from .models import CompressionConfig
 Image.MAX_IMAGE_PIXELS = 300_000_000
 
 TMP_SUFFIX = ".pdfresize.tmp"
+_DO_NAME_RE = re.compile(rb"/([^\s/()<>[\]{}%]+)\s+Do\b")
 
 
 @dataclass
@@ -45,7 +48,6 @@ def _recompress_opaque_image(
     """Recompress an opaque image to JPEG, downscaling if effective DPI exceeds target."""
     try:
         with Image.open(io.BytesIO(orig_bytes)) as img:
-            img.load()
             w, h = img.size
             if w <= 0 or h <= 0:
                 return None
@@ -66,6 +68,13 @@ def _recompress_opaque_image(
                     new_w = max(16, int(round(w * scale)))
                     new_h = max(16, int(round(h * scale)))
 
+            # Fast libjpeg DCT prescaling (>=2x target keeps LANCZOS quality intact while cutting decode cost)
+            if img.format == "JPEG" and (new_w, new_h) != (w, h):
+                draft_mode = "L" if cfg.grayscale else None
+                img.draft(draft_mode, (new_w * 2, new_h * 2))
+
+            img.load()
+
             if cfg.grayscale:
                 if img.mode != "L":
                     img = img.convert("L")
@@ -75,7 +84,7 @@ def _recompress_opaque_image(
                 elif img.mode != "RGB":
                     img = img.convert("RGB")
 
-            if (new_w, new_h) != (w, h):
+            if img.size != (new_w, new_h):
                 img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
             buf = io.BytesIO()
@@ -149,58 +158,63 @@ def _recompress_transparent_image(
         return None
 
 
-def _optimize_images(doc: pymupdf.Document, cfg: CompressionConfig) -> int:
+def _optimize_images(
+    doc: pymupdf.Document,
+    cfg: CompressionConfig,
+    *,
+    image_threads: int = 1,
+) -> int:
     """Scan all pages, compute max displayed size per xref, and optimize unique images."""
     if not cfg.compress_images or cfg.preset == "lossless":
         return 0
 
-    # Map xref -> (max_disp_w_in, max_disp_h_in, first_page_index)
+    # Map xref -> [max_disp_w_in, max_disp_h_in, page_index]
     xref_display: dict[int, list] = {}
     smask_xrefs: set[int] = set()
     xref_to_smask: dict[int, int] = {}
 
+    # NOTE: Avoid page.get_image_info(xrefs=True) and page.get_image_rects(), which
+    # decode and MD5-hash every image in /Resources on every page (O(pages * resources),
+    # taking 20+ minutes on PDFs with a shared XObject table). Matching `/Name Do`
+    # operators in the page content stream + page.get_image_bbox(img_tuple) is ~3000x faster.
     for page_idx in range(doc.page_count):
         page = doc[page_idx]
-        # Track SMask xrefs so we never overwrite a mask object independently
+        try:
+            raw_contents = page.read_contents()
+            used_names = {
+                m.decode("latin1") for m in _DO_NAME_RE.findall(raw_contents)
+            }
+        except Exception:
+            used_names = set()
+
         for img_tuple in page.get_images(full=True):
             xref = img_tuple[0]
             smask = img_tuple[1]
+            img_name = img_tuple[7] if len(img_tuple) > 7 else ""
+            referencer = img_tuple[9] if len(img_tuple) > 9 else 0
             if smask and smask > 0:
                 smask_xrefs.add(smask)
                 xref_to_smask[xref] = smask
             if xref not in xref_display:
                 xref_display[xref] = [None, None, page_idx]
 
-        # Track displayed bounding boxes in inches for accurate effective DPI
-        try:
-            infos = page.get_image_info(xrefs=True)
-        except Exception:
-            infos = []
-
-        for info in infos:
-            xref = info.get("xref", 0)
-            if not xref or xref <= 0:
-                continue
-            bbox = info.get("bbox")
-            disp_w_in = None
-            disp_h_in = None
-            if bbox and len(bbox) == 4:
-                bw = abs(float(bbox[2]) - float(bbox[0])) / 72.0
-                bh = abs(float(bbox[3]) - float(bbox[1])) / 72.0
-                if bw > 0.05 and bh > 0.05:
-                    disp_w_in = bw
-                    disp_h_in = bh
-
-            entry = xref_display.get(xref)
-            if entry is None:
-                xref_display[xref] = [disp_w_in, disp_h_in, page_idx]
-            else:
-                if disp_w_in is not None:
-                    entry[0] = disp_w_in if entry[0] is None else max(entry[0], disp_w_in)
-                if disp_h_in is not None:
-                    entry[1] = disp_h_in if entry[1] is None else max(entry[1], disp_h_in)
+            # Only compute bbox for images actually drawn on this page (or inside a Form XObject)
+            if (img_name and img_name in used_names) or referencer != 0:
+                try:
+                    bbox = page.get_image_bbox(img_tuple)
+                    if bbox and not bbox.is_empty and not bbox.is_infinite:
+                        bw = abs(float(bbox.width)) / 72.0
+                        bh = abs(float(bbox.height)) / 72.0
+                        if bw > 0.05 and bh > 0.05:
+                            entry = xref_display[xref]
+                            entry[0] = bw if entry[0] is None else max(entry[0], bw)
+                            entry[1] = bh if entry[1] is None else max(entry[1], bh)
+                            entry[2] = page_idx
+                except Exception:
+                    pass
 
     optimized_count = 0
+    opaque_tasks: list[tuple[int, int, bytes, int, int, Optional[float], Optional[float]]] = []
 
     for xref, (max_w_in, max_h_in, page_idx) in xref_display.items():
         if xref in smask_xrefs:
@@ -227,8 +241,6 @@ def _optimize_images(doc: pymupdf.Document, cfg: CompressionConfig) -> int:
         if bpc == 1 and len(orig_bytes) < 65536:
             continue
 
-        page = doc[page_idx]
-
         if smask_xref > 0:
             if not cfg.optimize_transparent or len(orig_bytes) < 24576:
                 continue
@@ -242,21 +254,37 @@ def _optimize_images(doc: pymupdf.Document, cfg: CompressionConfig) -> int:
             )
             if new_png is not None:
                 try:
-                    page.replace_image(xref, stream=new_png)
+                    doc[page_idx].replace_image(xref, stream=new_png)
                     optimized_count += 1
                 except Exception:
                     pass
             continue
 
-        new_jpeg = _recompress_opaque_image(
-            orig_bytes, orig_w, orig_h, max_w_in, max_h_in, cfg
-        )
-        if new_jpeg is not None:
-            try:
-                page.replace_image(xref, stream=new_jpeg)
-                optimized_count += 1
-            except Exception:
-                pass
+        opaque_tasks.append((xref, page_idx, orig_bytes, orig_w, orig_h, max_w_in, max_h_in))
+
+    if opaque_tasks:
+        threads = max(1, min(image_threads, len(opaque_tasks)))
+        if threads > 1:
+            with ThreadPoolExecutor(max_workers=threads) as pool:
+                results = list(
+                    pool.map(
+                        lambda t: _recompress_opaque_image(t[2], t[3], t[4], t[5], t[6], cfg),
+                        opaque_tasks,
+                    )
+                )
+        else:
+            results = [
+                _recompress_opaque_image(t[2], t[3], t[4], t[5], t[6], cfg)
+                for t in opaque_tasks
+            ]
+
+        for (xref, page_idx, *_), new_jpeg in zip(opaque_tasks, results):
+            if new_jpeg is not None:
+                try:
+                    doc[page_idx].replace_image(xref, stream=new_jpeg)
+                    optimized_count += 1
+                except Exception:
+                    pass
 
     return optimized_count
 
@@ -301,6 +329,7 @@ def compress_pdf_file(
     *,
     inplace: bool = False,
     backup_path: Optional[str | Path] = None,
+    image_threads: int = 1,
 ) -> CompressionResult:
     """Compress a single PDF file safely with integrity verification and atomic replacement."""
     t0 = time.perf_counter()
@@ -380,7 +409,7 @@ def compress_pdf_file(
                     error="PDF 页数为 0",
                 )
 
-            images_optimized = _optimize_images(doc, config)
+            images_optimized = _optimize_images(doc, config, image_threads=image_threads)
 
             if config.strip_metadata:
                 try:

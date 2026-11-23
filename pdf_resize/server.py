@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -41,6 +41,24 @@ app = FastAPI(title="PDF Resize", version="1.0.0")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+@app.middleware("http")
+async def _no_stale_static_cache(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
+def _static_version() -> str:
+    mtimes = []
+    for name in ("index.html", "app.js", "styles.css"):
+        p = STATIC_DIR / name
+        if p.exists():
+            mtimes.append(int(p.stat().st_mtime_ns))
+    return str(max(mtimes) if mtimes else 1)
+
+
 def _safe_rel_path(raw: str) -> str:
     """Sanitize a client-supplied relative path against directory traversal."""
     cleaned = raw.replace("\\", "/").lstrip("/")
@@ -53,7 +71,19 @@ def _safe_rel_path(raw: str) -> str:
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     html_path = STATIC_DIR / "index.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    ver = _static_version()
+    html = (
+        html_path.read_text(encoding="utf-8")
+        .replace('href="/static/styles.css"', f'href="/static/styles.css?v={ver}"')
+        .replace('src="/static/app.js"', f'src="/static/app.js?v={ver}"')
+    )
+    return HTMLResponse(
+        html,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 @app.get("/api/system")
@@ -151,6 +181,7 @@ def fs_pick_folder(multiple: bool = Query(default=False)) -> dict[str, Any]:
         try:
             if multiple:
                 script = (
+                    "activate\n"
                     'set chosenFolders to choose folder with prompt "可按住 Command(⌘) 多选多个包含 PDF 的文件夹" '
                     "with multiple selections allowed\n"
                     'set out to ""\n'
@@ -160,7 +191,7 @@ def fs_pick_folder(multiple: bool = Query(default=False)) -> dict[str, Any]:
                     "return out"
                 )
             else:
-                script = 'POSIX path of (choose folder with prompt "选择包含 PDF 的文件夹")'
+                script = 'activate\nPOSIX path of (choose folder with prompt "选择包含 PDF 的文件夹")'
 
             proc = subprocess.run(
                 ["osascript", "-e", script],
@@ -169,13 +200,22 @@ def fs_pick_folder(multiple: bool = Query(default=False)) -> dict[str, Any]:
                 timeout=120,
             )
             if proc.returncode != 0:
-                return {"path": None, "paths": []}
+                err_txt = (proc.stderr or "").strip()
+                # -128 is standard macOS "User canceled"
+                if "-128" in err_txt or "User canceled" in err_txt or not err_txt:
+                    return {"path": None, "paths": []}
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"系统弹窗失败（请改用「浏览添加」或直接粘贴路径）: {err_txt}",
+                )
             paths = [
                 line.strip().rstrip("/") or "/"
                 for line in proc.stdout.splitlines()
                 if line.strip()
             ]
             return {"path": paths[0] if paths else None, "paths": paths}
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"无法打开 macOS 文件夹选择器: {exc}")
 
@@ -291,7 +331,7 @@ async def api_preview_upload(
                 if not chunk:
                     break
                 out.write(chunk)
-        return run_single_preview(src_path, cfg, page=page)
+        return await asyncio.to_thread(run_single_preview, src_path, cfg, page=page)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"预览失败: {exc}")
     finally:
@@ -398,13 +438,15 @@ def api_get_job(job_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/jobs/{job_id}/stream")
-async def api_stream_job(job_id: str) -> StreamingResponse:
+async def api_stream_job(job_id: str, request: Request) -> StreamingResponse:
     if not storage.get_job(job_id):
         raise HTTPException(status_code=404, detail="任务不存在")
 
     async def event_gen():
         last_ver = -1
         while True:
+            if await request.is_disconnected():
+                break
             detail = manager.get_job_detail(job_id)
             if not detail:
                 break

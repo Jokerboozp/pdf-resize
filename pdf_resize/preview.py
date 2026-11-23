@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import time
 import uuid
@@ -61,15 +62,22 @@ def run_single_preview(
     work_dir = PREVIEW_ROOT / token
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    out_pdf = work_dir / "compressed.pdf"
-    res = compress_pdf_file(src, out_pdf, config, inplace=False)
+    try:
+        out_pdf = work_dir / "compressed.pdf"
+        image_threads = max(1, min(4, os.cpu_count() or 4))
+        res = compress_pdf_file(
+            src, out_pdf, config, inplace=False, image_threads=image_threads
+        )
 
-    orig_png = work_dir / "orig.png"
-    comp_png = work_dir / "comp.png"
+        orig_png = work_dir / "orig.png"
+        comp_png = work_dir / "comp.png"
 
-    rendered_page, total_pages = _render_page_png(src, page, orig_png)
-    comp_source = out_pdf if out_pdf.exists() else src
-    _render_page_png(comp_source, rendered_page, comp_png)
+        rendered_page, total_pages = _render_page_png(src, page, orig_png)
+        comp_source = out_pdf if out_pdf.exists() else src
+        _render_page_png(comp_source, rendered_page, comp_png)
+    except Exception:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise
 
     saving_pct = (
         round((res.saved_bytes / res.orig_size) * 100.0, 2) if res.orig_size > 0 else 0.0

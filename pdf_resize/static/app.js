@@ -70,12 +70,44 @@
   }
 
   function toast(msg, type = "info") {
+    const container = $("toastContainer");
+    if (!container) return;
     const el = document.createElement("div");
     el.className = `toast ${type}`;
     el.textContent = msg;
-    $("toastContainer").appendChild(el);
+    container.appendChild(el);
     setTimeout(() => el.remove(), 4200);
   }
+
+  function showConfirm(message, title = "请确认操作") {
+    const modal = $("confirmModal");
+    if (!modal) return Promise.resolve(window.confirm(message));
+    return new Promise((resolve) => {
+      $("confirmModalTitle").textContent = title;
+      $("confirmModalBody").textContent = message;
+      modal.classList.remove("hidden");
+      const cleanup = (val) => {
+        modal.classList.add("hidden");
+        $("confirmOkBtn").removeEventListener("click", onOk);
+        $("confirmCancelBtn").removeEventListener("click", onCancel);
+        $("closeConfirmModalBtn").removeEventListener("click", onCancel);
+        resolve(val);
+      };
+      const onOk = () => cleanup(true);
+      const onCancel = () => cleanup(false);
+      $("confirmOkBtn").addEventListener("click", onOk);
+      $("confirmCancelBtn").addEventListener("click", onCancel);
+      $("closeConfirmModalBtn").addEventListener("click", onCancel);
+    });
+  }
+
+  window.addEventListener("error", (ev) => {
+    toast(`页面脚本异常: ${ev.message || "未知错误"}`, "error");
+  });
+  window.addEventListener("unhandledrejection", (ev) => {
+    const reason = ev.reason?.message || String(ev.reason || "请求失败");
+    toast(`操作失败: ${reason}`, "error");
+  });
 
   async function api(url, opts = {}) {
     const res = await fetch(url, opts);
@@ -302,7 +334,12 @@
     const parts = val.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     const added = addLocalSourceDirs(parts);
     $("localSourceDir").value = "";
-    if (added > 0) toast(`已添加 ${added} 个文件夹到列表`, "success");
+    if (added > 0) {
+      toast(`已添加 ${added} 个文件夹，正在自动扫描...`, "success");
+      scanLocalDirectory();
+    } else {
+      scanLocalDirectory();
+    }
   });
 
   $("localSourceDir").addEventListener("keydown", (e) => {
@@ -369,15 +406,20 @@
   });
   $("folderGoBtn").addEventListener("click", () => loadFolderListing($("folderCurrentInput").value.trim()));
   $("confirmFolderBtn").addEventListener("click", () => {
+    let shouldScan = false;
     if (state.folderCurrentPath) {
       if (state.folderModalAppendSource) {
         const added = addLocalSourceDirs([state.folderCurrentPath]);
-        if (added > 0) toast("已添加文件夹，可继续添加更多目录", "success");
+        if (added > 0) toast("已添加文件夹，正在自动扫描...", "success");
+        shouldScan = true;
       } else if (state.folderModalTargetInput) {
         state.folderModalTargetInput.value = state.folderCurrentPath;
       }
     }
     $("folderModal").classList.add("hidden");
+    if (shouldScan) {
+      scanLocalDirectory();
+    }
   });
   $("closeFolderModalBtn").addEventListener("click", () => $("folderModal").classList.add("hidden"));
   $("cancelFolderModalBtn").addEventListener("click", () => $("folderModal").classList.add("hidden"));
@@ -475,7 +517,11 @@
       added++;
     }
     renderUploadQueue();
-    if (added > 0) toast(`已添加 ${added} 个 PDF 到待上传队列`, "success");
+    if (added > 0) {
+      toast(`已添加 ${added} 个 PDF 到待上传队列，请点击右侧「开始上传并批量压缩」`, "success");
+    } else if (items.length > 0) {
+      toast("所选内容中未发现 .pdf 文件", "error");
+    }
   }
 
   function renderUploadQueue() {
@@ -545,17 +591,30 @@
   dropZone.addEventListener("drop", async (e) => {
     e.preventDefault();
     dropZone.classList.remove("dragover");
+    // IMPORTANT: Extract entries/files synchronously before any await, because
+    // browsers clear DataTransferItemList as soon as the event handler yields.
     const dtItems = Array.from(e.dataTransfer.items || []);
-    const collected = [];
+    const entries = [];
+    const directFiles = [];
     for (const item of dtItems) {
       const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
       if (entry) {
-        const res = await readEntryRecursively(entry, "");
-        collected.push(...res);
-      } else {
-        const f = item.getAsFile && item.getAsFile();
-        if (f) collected.push({ file: f, relPath: f.name });
+        entries.push(entry);
+      } else if (item.getAsFile) {
+        const f = item.getAsFile();
+        if (f) directFiles.push({ file: f, relPath: f.name });
       }
+    }
+    if (!entries.length && !directFiles.length && e.dataTransfer.files?.length) {
+      for (const f of Array.from(e.dataTransfer.files)) {
+        directFiles.push({ file: f, relPath: f.name });
+      }
+    }
+
+    const collected = [...directFiles];
+    for (const entry of entries) {
+      const res = await readEntryRecursively(entry, "");
+      collected.push(...res);
     }
     addFilesToUploadQueue(collected);
   });
@@ -585,8 +644,9 @@
     const limitFiles = limitVal ? Number(limitVal) : null;
 
     if (state.outputMode === "inplace" && !backupDir) {
-      const ok = window.confirm(
-        `即将以【原地覆盖】模式直接优化 ${sourceDirs.length} 个目录中的 PDF 文件（未设置备份目录）。\n\n程序已启用同盘原子写入与页数完整性校验，变大文件会自动放弃覆盖。\n确定开始吗？`
+      const ok = await showConfirm(
+        `即将以【原地覆盖】模式直接优化 ${sourceDirs.length} 个目录中的 PDF 文件（未设置备份目录）。\n\n程序已启用同盘原子写入与页数完整性校验，变大文件会自动放弃覆盖。\n确定开始吗？`,
+        "确认原地覆盖优化"
       );
       if (!ok) return;
     }
@@ -624,6 +684,8 @@
     }
     $("startJobBtn").disabled = true;
     $("uploadBarWrap").classList.remove("hidden");
+    $("uploadBarFill").style.width = "0%";
+    $("uploadProgressText").textContent = `正在上传 0 / ${state.uploadQueue.length} ...`;
     try {
       const job = await api("/api/jobs/upload/init", {
         method: "POST",
@@ -976,7 +1038,7 @@
   });
   $("jdCancelBtn").addEventListener("click", async () => {
     if (!state.activeJobId) return;
-    if (!window.confirm("确定要取消当前任务吗？（已完成的文件不受影响）")) return;
+    if (!(await showConfirm("确定要取消当前任务吗？（已完成的文件不受影响）", "确认取消任务"))) return;
     await api(`/api/jobs/${state.activeJobId}/cancel`, { method: "POST" });
     toast("任务已取消");
     loadJobsList();
@@ -997,7 +1059,7 @@
   });
   $("jdDeleteBtn").addEventListener("click", async () => {
     if (!state.activeJobId) return;
-    if (!window.confirm("仅删除任务历史记录（不会删除你的原 PDF 文件），确定吗？")) return;
+    if (!(await showConfirm("仅删除任务历史记录（不会删除你的原 PDF 文件），确定吗？", "确认删除记录"))) return;
     await api(`/api/jobs/${state.activeJobId}?delete_upload_files=false`, { method: "DELETE" });
     state.activeJobId = null;
     $("jobDetailContent").classList.add("hidden");
@@ -1045,7 +1107,7 @@
   $("refreshJobsBtn").addEventListener("click", loadJobsList);
 
   $("clearFpBtn").addEventListener("click", async () => {
-    if (!window.confirm("清空「已优化文件缓存」后，再次扫描目录时会重新处理之前压缩过的 PDF。确定清空吗？")) return;
+    if (!(await showConfirm("清空「已优化文件缓存」后，再次扫描目录时会重新处理之前压缩过的 PDF。确定清空吗？", "确认清空缓存"))) return;
     const res = await api("/api/fingerprints/clear", { method: "POST" });
     toast(`已清空 ${res.removed} 条历史跳过指纹`, "success");
   });
