@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF Resize — 海量 PDF 智能批量压缩引擎</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-icon">PDF</div>
+      <div>
+        <h1>PDF Resize</h1>
+        <p class="subtitle">海量 PDF 多进程智能压缩 · 专为 60GB+ / 3000+ 文件优化</p>
+      </div>
+    </div>
+    <nav class="nav-tabs" role="tablist">
+      <button class="nav-tab active" data-tab="create">新建压缩任务</button>
+      <button class="nav-tab" data-tab="preview">效果试压对比</button>
+      <button class="nav-tab" data-tab="jobs">任务监控与历史 <span id="runningBadge" class="badge hidden">0</span></button>
+    </nav>
+    <div class="sys-meta">
+      <span id="cpuBadge" class="chip">检测硬件中...</span>
+      <button id="clearFpBtn" class="btn btn-ghost btn-sm" title="清空已优化文件指纹，允许重新压缩之前优化过的文件">重置跳过缓存</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- TAB 1: CREATE JOB -->
+    <section id="tab-create" class="tab-panel active">
+      <div class="grid-2">
+        <!-- LEFT COLUMN: INPUT & OUTPUT -->
+        <div class="stack">
+          <div class="card">
+            <div class="card-header">
+              <h2>1. 选择 PDF 来源</h2>
+              <div class="segmented" id="sourceModeSwitch">
+                <button class="seg-btn active" data-mode="local">本地目录直连（推荐 60GB+）</button>
+                <button class="seg-btn" data-mode="upload">批量拖拽 / 上传</button>
+              </div>
+            </div>
+
+            <!-- MODE A: LOCAL DIRECTORY -->
+            <div id="sourceLocalPanel">
+              <div class="tip-banner">
+                <strong>零拷贝极速模式：</strong>直接读取本地磁盘目录，无需通过浏览器上传 60GB 数据，支持<strong>直接原地优化原有 PDF</strong>、断点续传与失败重试。
+              </div>
+
+              <div class="form-group">
+                <label for="localSourceDir">PDF 所在文件夹路径</label>
+                <div class="input-row">
+                  <input id="localSourceDir" type="text" placeholder="例如：D:\Documents\PDF库" />
+                  <button class="btn btn-secondary" id="browseSourceBtn">浏览目录</button>
+                  <button class="btn btn-secondary" id="nativePickSourceBtn" title="调用 Windows 原生文件夹选择弹窗">系统选择</button>
+                </div>
+              </div>
+
+              <div class="inline-options">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="localRecursive" checked />
+                  <span>递归扫描所有子文件夹</span>
+                </label>
+                <button class="btn btn-primary" id="scanDirBtn">扫描统计</button>
+              </div>
+
+              <div id="scanResultBox" class="scan-result hidden">
+                <div class="scan-metrics">
+                  <div class="metric-mini">
+                    <span class="label">发现 PDF</span>
+                    <strong id="scanTotalFiles">0</strong>
+                  </div>
+                  <div class="metric-mini">
+                    <span class="label">总计体积</span>
+                    <strong id="scanTotalBytes">0 B</strong>
+                  </div>
+                  <div class="metric-mini">
+                    <span class="label">待压缩</span>
+                    <strong id="scanPendingFiles" class="text-accent">0</strong>
+                  </div>
+                  <div class="metric-mini">
+                    <span class="label">自动跳过</span>
+                    <strong id="scanSkippedFiles" class="text-muted">0</strong>
+                  </div>
+                </div>
+                <div class="sample-preview-row">
+                  <label for="scanSampleSelect">大文件抽样试压：</label>
+                  <select id="scanSampleSelect"></select>
+                  <button class="btn btn-secondary btn-sm" id="quickPreviewSampleBtn">先试压看效果</button>
+                </div>
+              </div>
+
+              <hr class="divider" />
+
+              <div class="form-group">
+                <label>输出方式</label>
+                <div class="radio-cards">
+                  <label class="radio-card active" data-output="inplace">
+                    <input type="radio" name="outputMode" value="inplace" checked />
+                    <div>
+                      <strong>直接优化原有 PDF（原地覆盖）</strong>
+                      <p>采用同盘临时文件 + 页数完整性校验 + 原子替换；若压缩后反而变大或未达阈值则自动保留原文件。</p>
+                    </div>
+                  </label>
+                  <label class="radio-card" data-output="output_dir">
+                    <input type="radio" name="outputMode" value="output_dir" />
+                    <div>
+                      <strong>输出到新目录（保留原文件）</strong>
+                      <p>完整保持原始子目录层级结构，将优化后的 PDF 写入指定新文件夹。</p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div id="backupDirGroup" class="form-group">
+                <label for="localBackupDir">原文件自动备份目录（可选，强烈建议首次大批量时填写）</label>
+                <div class="input-row">
+                  <input id="localBackupDir" type="text" placeholder="留空则直接覆盖不备份；例如：E:\PDF_Backup" />
+                  <button class="btn btn-secondary" id="browseBackupBtn">浏览</button>
+                </div>
+              </div>
+
+              <div id="outputDirGroup" class="form-group hidden">
+                <label for="localOutputDir">压缩后输出目录（必填）</label>
+                <div class="input-row">
+                  <input id="localOutputDir" type="text" placeholder="例如：D:\Documents\PDF库_压缩版" />
+                  <button class="btn btn-secondary" id="browseOutputBtn">浏览</button>
+                </div>
+              </div>
+
+              <div class="form-row-2">
+                <div class="form-group">
+                  <label for="localJobName">任务名称（可选）</label>
+                  <input id="localJobName" type="text" placeholder="留空自动生成" />
+                </div>
+                <div class="form-group">
+                  <label for="localLimitFiles">试跑数量限制（可选）</label>
+                  <input id="localLimitFiles" type="number" min="1" placeholder="留空处理全部；例如填 10 先试跑" />
+                </div>
+              </div>
+            </div>
+
+            <!-- MODE B: DRAG & DROP / UPLOAD -->
+            <div id="sourceUploadPanel" class="hidden">
+              <div class="tip-banner">
+                <strong>流式分批上传：</strong>支持直接拖入数百个 PDF 或整个文件夹，浏览器采用 4 路并发流式上传写入磁盘，边传边压不爆内存。若总量达 60GB，建议优先使用左侧「本地目录直连」。
+              </div>
+
+              <div id="dropZone" class="drop-zone">
+                <div class="drop-zone-icon">⬆</div>
+                <div class="drop-zone-title">将大量 PDF 文件或整个文件夹拖拽到此处</div>
+                <div class="drop-zone-sub">自动递归识别文件夹内所有 .pdf 文件，保持目录层级</div>
+                <div class="drop-zone-actions">
+                  <button type="button" class="btn btn-secondary" id="pickFilesBtn">选择多个 PDF</button>
+                  <button type="button" class="btn btn-secondary" id="pickFolderUploadBtn">选择整个文件夹</button>
+                </div>
+                <input type="file" id="uploadFilesInput" multiple accept=".pdf,application/pdf" class="hidden" />
+                <input type="file" id="uploadFolderInput" webkitdirectory directory multiple class="hidden" />
+              </div>
+
+              <div id="uploadQueueSummary" class="scan-result hidden">
+                <div class="scan-metrics">
+                  <div class="metric-mini">
+                    <span class="label">已选 PDF</span>
+                    <strong id="uploadFileCount">0</strong>
+                  </div>
+                  <div class="metric-mini">
+                    <span class="label">总大小</span>
+                    <strong id="uploadTotalBytes">0 B</strong>
+                  </div>
+                  <div class="metric-mini">
+                    <span class="label">上传状态</span>
+                    <strong id="uploadProgressText" class="text-accent">待上传</strong>
+                  </div>
+                  <div class="metric-mini">
+                    <span class="label">操作</span>
+                    <button class="btn btn-ghost btn-sm" id="clearUploadQueueBtn">清空列表</button>
+                  </div>
+                </div>
+                <div id="uploadBarWrap" class="progress-track hidden">
+                  <div id="uploadBarFill" class="progress-fill" style="width: 0%"></div>
+                </div>
+              </div>
+
+              <div class="form-group" style="margin-top: 14px;">
+                <label for="uploadOutputDir">自定义输出保存目录（可选，留空保存到项目 data/uploads 目录）</label>
+                <div class="input-row">
+                  <input id="uploadOutputDir" type="text" placeholder="留空自动创建输出目录，完成后可一键打包 ZIP 或打开目录" />
+                  <button class="btn btn-secondary" id="browseUploadOutBtn">浏览</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN: COMPRESSION SETTINGS -->
+        <div class="stack">
+          <div class="card">
+            <div class="card-header">
+              <h2>2. 自定义压缩程度</h2>
+              <span class="chip chip-accent" id="currentPresetChip">均衡压缩（推荐）</span>
+            </div>
+
+            <div class="preset-grid" id="presetGrid">
+              <!-- Rendered dynamically from /api/system -->
+            </div>
+
+            <div class="controls-panel">
+              <div class="slider-row">
+                <div class="slider-head">
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="cfgCompressImages" checked />
+                    <span>压缩与重采样嵌入图片</span>
+                  </label>
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="cfgDownsample" checked />
+                    <span>启用 DPI 缩放</span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="slider-row" id="dpiRow">
+                <div class="slider-head">
+                  <label for="cfgTargetDpi">目标图片分辨率 (DPI)</label>
+                  <strong class="slider-val"><span id="cfgTargetDpiVal">150</span> DPI</strong>
+                </div>
+                <input type="range" id="cfgTargetDpi" min="50" max="300" step="5" value="150" />
+                <div class="slider-ticks"><span>50 (极小)</span><span>100 (省空间)</span><span>150 (推荐)</span><span>200 (高清)</span><span>300 (印刷)</span></div>
+              </div>
+
+              <div class="slider-row" id="qualityRow">
+                <div class="slider-head">
+                  <label for="cfgJpegQuality">JPEG 图片质量</label>
+                  <strong class="slider-val"><span id="cfgJpegQualityVal">70</span>%</strong>
+                </div>
+                <input type="range" id="cfgJpegQuality" min="15" max="95" step="1" value="70" />
+                <div class="slider-ticks"><span>15 (极致)</span><span>50 (强力)</span><span>70 (均衡)</span><span>85 (高质)</span><span>95 (近无损)</span></div>
+              </div>
+
+              <div class="slider-row">
+                <div class="slider-head">
+                  <label for="cfgWorkers">多进程并行数（根据 CPU 与硬盘 I/O 调整）</label>
+                  <strong class="slider-val"><span id="cfgWorkersVal">8</span> 进程</strong>
+                </div>
+                <input type="range" id="cfgWorkers" min="1" max="16" step="1" value="8" />
+              </div>
+
+              <div class="form-row-2">
+                <div class="form-group">
+                  <label for="cfgMinSaving">最小节省阈值 (%)</label>
+                  <input type="number" id="cfgMinSaving" min="0" max="90" step="0.5" value="1" />
+                </div>
+                <div class="form-group">
+                  <label for="cfgSkipSmallKb">跳过小于 (KB) 的文件</label>
+                  <input type="number" id="cfgSkipSmallKb" min="0" step="50" value="0" />
+                </div>
+              </div>
+
+              <div class="toggles-grid">
+                <label class="toggle-item">
+                  <input type="checkbox" id="cfgGrayscale" />
+                  <span>图片转为灰度（黑白扫描件极省空间）</span>
+                </label>
+                <label class="toggle-item">
+                  <input type="checkbox" id="cfgOptimizeTransparent" checked />
+                  <span>安全优化透明通道 PNG 图片</span>
+                </label>
+                <label class="toggle-item">
+                  <input type="checkbox" id="cfgSubsetFonts" checked />
+                  <span>字体子集化（移除未用字形）</span>
+                </label>
+                <label class="toggle-item">
+                  <input type="checkbox" id="cfgStripMetadata" />
+                  <span>清除文档元数据与 XMP</span>
+                </label>
+                <label class="toggle-item">
+                  <input type="checkbox" id="cfgUseQpdf" checked />
+                  <span>启用 QPDF 对象流深度压缩</span>
+                </label>
+                <label class="toggle-item">
+                  <input type="checkbox" id="cfgPreserveMtime" checked />
+                  <span>保留原文件修改时间</span>
+                </label>
+                <label class="toggle-item">
+                  <input type="checkbox" id="cfgSkipAlready" checked />
+                  <span>自动跳过历史已优化文件</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="cta-bar">
+              <div class="safety-note">
+                安全保护已开启：绝不覆盖变大文件 · 页数校验防损坏 · 随时暂停续传
+              </div>
+              <button id="startJobBtn" class="btn btn-primary btn-lg">开始批量压缩</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: VISUAL PREVIEW -->
+    <section id="tab-preview" class="tab-panel">
+      <div class="card">
+        <div class="card-header">
+          <h2>单文件效果试压与肉眼对比（不改动原文件）</h2>
+          <span class="text-muted">自动同步你在「新建任务」中调整的 DPI 与质量参数</span>
+        </div>
+
+        <div class="preview-toolbar">
+          <div class="input-row" style="flex: 1;">
+            <input id="previewLocalPath" type="text" placeholder="输入本地单个 PDF 路径，或从右侧上传试压文件" />
+            <button class="btn btn-primary" id="runLocalPreviewBtn">试压本地文件</button>
+          </div>
+          <span class="text-muted">或</span>
+          <label class="btn btn-secondary" for="previewUploadInput">上传单个 PDF 试压</label>
+          <input type="file" id="previewUploadInput" accept=".pdf,application/pdf" class="hidden" />
+          <div class="page-picker">
+            <label for="previewPageNum">预览页码：</label>
+            <input id="previewPageNum" type="number" min="1" value="1" style="width: 72px;" />
+          </div>
+        </div>
+
+        <div id="previewLoading" class="empty-state hidden">正在使用当前参数试压并渲染高清对比图...</div>
+
+        <div id="previewResultArea" class="hidden">
+          <div class="kpi-grid kpi-4" style="margin: 16px 0;">
+            <div class="kpi-card">
+              <span class="label">原始大小</span>
+              <strong id="prevOrigSize">-</strong>
+            </div>
+            <div class="kpi-card">
+              <span class="label">压缩后大小</span>
+              <strong id="prevNewSize" class="text-accent">-</strong>
+            </div>
+            <div class="kpi-card">
+              <span class="label">节省空间</span>
+              <strong id="prevSaved" class="text-success">-</strong>
+            </div>
+            <div class="kpi-card">
+              <span class="label">处理详情</span>
+              <strong id="prevMeta">-</strong>
+            </div>
+          </div>
+
+          <div class="compare-grid">
+            <div class="compare-pane">
+              <div class="compare-title">原始页面（<span id="prevPageLabelOrig">第 1 页</span>）</div>
+              <div class="compare-img-wrap">
+                <img id="prevImgOrig" alt="原始页面预览" />
+              </div>
+            </div>
+            <div class="compare-pane">
+              <div class="compare-title">压缩后效果（<span id="prevPageLabelComp">第 1 页</span>）</div>
+              <div class="compare-img-wrap">
+                <img id="prevImgComp" alt="压缩后页面预览" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: JOBS MONITOR -->
+    <section id="tab-jobs" class="tab-panel">
+      <div class="jobs-layout">
+        <aside class="card jobs-sidebar">
+          <div class="card-header">
+            <h2>任务列表</h2>
+            <button class="btn btn-ghost btn-sm" id="refreshJobsBtn">刷新</button>
+          </div>
+          <div id="jobsList" class="jobs-list">
+            <div class="empty-state">暂无任务</div>
+          </div>
+        </aside>
+
+        <div class="card job-detail" id="jobDetailPane">
+          <div id="jobEmptyState" class="empty-state">请从左侧选择一个任务，或新建批量压缩任务</div>
+
+          <div id="jobDetailContent" class="hidden">
+            <div class="job-header">
+              <div>
+                <div class="job-title-row">
+                  <h2 id="jdName">任务名称</h2>
+                  <span id="jdStatusBadge" class="status-pill">running</span>
+                  <span id="jdModeBadge" class="chip">原地优化</span>
+                </div>
+                <p id="jdPaths" class="text-muted small-text"></p>
+              </div>
+              <div class="job-actions">
+                <button class="btn btn-secondary btn-sm hidden" id="jdPauseBtn">暂停</button>
+                <button class="btn btn-primary btn-sm hidden" id="jdResumeBtn">继续</button>
+                <button class="btn btn-secondary btn-sm hidden" id="jdRetryBtn">重试失败</button>
+                <button class="btn btn-danger btn-sm hidden" id="jdCancelBtn">取消</button>
+                <button class="btn btn-secondary btn-sm" id="jdOpenDirBtn">打开目录</button>
+                <a class="btn btn-secondary btn-sm hidden" id="jdDownloadZipBtn" target="_blank">下载 ZIP</a>
+                <button class="btn btn-ghost btn-sm hidden" id="jdDeleteBtn">删除记录</button>
+              </div>
+            </div>
+
+            <div class="progress-section">
+              <div class="progress-labels">
+                <span>总体进度（按文件体积）：<strong id="jdPctBytes">0%</strong></span>
+                <span>文件数：<strong id="jdFileProgress">0 / 0</strong></span>
+              </div>
+              <div class="progress-track progress-lg">
+                <div id="jdProgressBar" class="progress-fill" style="width: 0%"></div>
+              </div>
+            </div>
+
+            <div class="kpi-grid kpi-5">
+              <div class="kpi-card">
+                <span class="label">已节省空间</span>
+                <strong id="jdSavedBytes" class="text-success">0 B</strong>
+                <span id="jdSavedPct" class="sub-val">0%</span>
+              </div>
+              <div class="kpi-card">
+                <span class="label">处理前后体积</span>
+                <strong id="jdProcessedSize">0 B</strong>
+                <span id="jdTotalOrigSize" class="sub-val">共 0 B</span>
+              </div>
+              <div class="kpi-card">
+                <span class="label">实时速度</span>
+                <strong id="jdSpeed">0 B/s</strong>
+                <span id="jdEta" class="sub-val">ETA: --</span>
+              </div>
+              <div class="kpi-card">
+                <span class="label">成功 / 跳过</span>
+                <strong><span id="jdDoneCount" class="text-success">0</span> / <span id="jdSkipCount">0</span></strong>
+                <span id="jdImagesCount" class="sub-val">优化图片: 0</span>
+              </div>
+              <div class="kpi-card">
+                <span class="label">等待 / 失败</span>
+                <strong><span id="jdPendingCount">0</span> / <span id="jdFailedCount" class="text-danger">0</span></strong>
+                <span id="jdProcessingCount" class="sub-val">处理中: 0</span>
+              </div>
+            </div>
+
+            <div id="jdActiveFilesWrap" class="active-files-bar hidden">
+              <span class="label">正在压缩：</span>
+              <div id="jdActiveFilesList" class="chip-list"></div>
+            </div>
+
+            <div class="table-toolbar">
+              <div class="filter-pills" id="fileStatusFilters">
+                <button class="filter-pill active" data-status="all">全部</button>
+                <button class="filter-pill" data-status="done">成功</button>
+                <button class="filter-pill" data-status="skipped">跳过</button>
+                <button class="filter-pill" data-status="failed">失败</button>
+                <button class="filter-pill" data-status="processing">处理中</button>
+                <button class="filter-pill" data-status="pending">等待中</button>
+              </div>
+              <div class="table-search-row">
+                <input type="text" id="fileSearchInput" placeholder="搜索文件名或路径..." />
+                <select id="fileSortSelect">
+                  <option value="id:asc">默认顺序</option>
+                  <option value="saved_bytes:desc">节省空间最大</option>
+                  <option value="orig_size:desc">原体积最大</option>
+                  <option value="updated_at:desc">最新完成</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>文件路径</th>
+                    <th>原大小</th>
+                    <th>压缩后</th>
+                    <th>节省</th>
+                    <th>耗时</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="filesTableBody"></tbody>
+              </table>
+            </div>
+
+            <div class="pagination-bar">
+              <span id="filesPageInfo" class="text-muted">第 1 / 1 页（共 0 条）</span>
+              <div class="pagination-btns">
+                <button class="btn btn-secondary btn-sm" id="prevPageBtn">上一页</button>
+                <button class="btn btn-secondary btn-sm" id="nextPageBtn">下一页</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- FOLDER BROWSER MODAL -->
+  <div id="folderModal" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>选择本地目录</h3>
+        <button class="btn btn-ghost btn-sm" id="closeFolderModalBtn">✕</button>
+      </div>
+      <div class="modal-path-bar">
+        <button class="btn btn-secondary btn-sm" id="folderUpBtn">↑ 上一级</button>
+        <input type="text" id="folderCurrentInput" />
+        <button class="btn btn-secondary btn-sm" id="folderGoBtn">跳转</button>
+      </div>
+      <div id="folderPdfHint" class="text-muted small-text" style="margin-bottom: 8px;"></div>
+      <div id="folderList" class="folder-list"></div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="cancelFolderModalBtn">取消</button>
+        <button class="btn btn-primary" id="confirmFolderBtn">选择当前目录</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
