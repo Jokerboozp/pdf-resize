@@ -6,7 +6,11 @@
     selectedPreset: "balanced",
     localSourceDirs: [], // string[]
     folderScanStats: {}, // path -> { total_files, total_bytes, pending_count }
+    lastScanSummary: null,
     uploadQueue: [], // [{ file, relPath }]
+    previewViewMode: "split", // split | side
+    previewTotalPages: null,
+    previewLastUploadFile: null,
     activeJobId: null,
     activeJobDetail: null,
     jobsCache: [],
@@ -22,6 +26,13 @@
     folderModalAppendSource: false,
     folderCurrentPath: "",
     folderParentPath: null,
+  };
+
+  const PRESET_META = {
+    lossless: { bars: 1, saving: "约省 5%–25%", short: "不降图片画质，仅结构与流优化" },
+    light: { bars: 2, saving: "约省 25%–50%", short: "200 DPI · 质量 82%，高清打印" },
+    balanced: { bars: 3, saving: "约省 45%–75%", short: "150 DPI · 质量 70%，清晰兼顾体积", recommended: true },
+    extreme: { bars: 4, saving: "约省 65%–88%", short: "100 DPI · 质量 50%，极致省空间" },
   };
 
   const $ = (id) => document.getElementById(id);
@@ -69,8 +80,8 @@
   }
 
   function statusClass(st) {
-    if (st.startsWith("skipped_")) return "status-skipped";
-    return `status-${st}`;
+    if (st && st.startsWith("skipped_")) return "status-skipped";
+    return `status-${st || "pending"}`;
   }
 
   function toast(msg, type = "info") {
@@ -139,9 +150,31 @@
     return res.json();
   }
 
+  // ---------- THEME SWITCHER ----------
+  function applyTheme(theme) {
+    const t = theme === "light" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", t);
+    try {
+      localStorage.setItem("pdf_resize_theme", t);
+    } catch {}
+    $("themeIconDark").classList.toggle("hidden", t === "light");
+    $("themeIconLight").classList.toggle("hidden", t !== "light");
+    $("themeToggleLabel").textContent = t === "light" ? "深色模式" : "浅色模式";
+  }
+
+  $("themeToggleBtn").addEventListener("click", () => {
+    const cur = document.documentElement.getAttribute("data-theme") || "dark";
+    applyTheme(cur === "dark" ? "light" : "dark");
+  });
+
+  try {
+    const savedTheme = localStorage.getItem("pdf_resize_theme");
+    if (savedTheme) applyTheme(savedTheme);
+  } catch {}
+
   // ---------- NAVIGATION ----------
   function switchTab(tabName, opts = {}) {
-    document.querySelectorAll(".nav-tab").forEach((b) => {
+    document.querySelectorAll(".nav-item").forEach((b) => {
       b.classList.toggle("active", b.dataset.tab === tabName);
     });
     document.querySelectorAll(".tab-panel").forEach((p) => {
@@ -152,9 +185,85 @@
     }
   }
 
-  document.querySelectorAll(".nav-tab").forEach((btn) => {
+  document.querySelectorAll(".nav-item").forEach((btn) => {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   });
+
+  // ---------- LIVE SUMMARY & STEPPER ----------
+  function updateWorkbenchSummary() {
+    const cfg = getCurrentConfig();
+    const presetInfo = state.system?.presets?.[state.selectedPreset];
+    const presetLabel = presetInfo ? presetInfo.label.split("（")[0] : `自定义 (${cfg.target_dpi} DPI / ${cfg.jpeg_quality}%)`;
+
+    // Advanced drawer summary
+    const advParts = [`${cfg.workers} 进程`, `最小节省 ${cfg.min_saving_percent}%`];
+    if (cfg.grayscale) advParts.push("灰度");
+    if (cfg.strip_metadata) advParts.push("清元数据");
+    if (cfg.skip_already_optimized) advParts.push("跳过已优化");
+    $("advancedSummaryText").textContent = advParts.join(" · ");
+
+    // Preview readout
+    $("previewConfigReadout").textContent = cfg.compress_images
+      ? `${cfg.downsample_images ? `${cfg.target_dpi} DPI` : "原分辨率"} · 质量 ${cfg.jpeg_quality}%${cfg.grayscale ? " · 灰度" : ""}`
+      : "无损结构优化";
+
+    const hasSource =
+      state.sourceMode === "local"
+        ? state.localSourceDirs.length > 0 || $("localSourceDir").value.trim().length > 0
+        : state.uploadQueue.length > 0;
+
+    // Stepper highlights
+    $("stepPill1").classList.toggle("done", hasSource);
+    $("stepPill1").classList.toggle("active", !hasSource);
+    $("stepPill2").classList.toggle("active", hasSource);
+    $("stepPill3").classList.toggle("active", hasSource);
+
+    const limitVal = $("localLimitFiles").value.trim();
+    const limitNum = limitVal ? Number(limitVal) : null;
+
+    if (state.sourceMode === "upload") {
+      if (!state.uploadQueue.length) {
+        $("launchSummaryMain").textContent = "请拖入或选择要上传的 PDF 文件";
+        $("launchSummarySub").textContent = `压缩强度：${presetLabel} · 4 路并发流式上传`;
+      } else {
+        const totalBytes = state.uploadQueue.reduce((acc, it) => acc + (it.file.size || 0), 0);
+        $("launchSummaryMain").textContent = `准备上传并压缩 ${state.uploadQueue.length.toLocaleString()} 个 PDF (${fmtSize(totalBytes)})`;
+        $("launchSummarySub").textContent = `压缩强度：${presetLabel} · 完成后可一键打开目录或打包 ZIP`;
+      }
+      $("startJobBtnText").textContent = "开始上传并压缩";
+      return;
+    }
+
+    const modeDesc = state.outputMode === "inplace" ? "原地覆盖优化" : "输出到新目录";
+    const backupDir = $("localBackupDir").value.trim();
+    const safetyExtra =
+      state.outputMode === "inplace"
+        ? backupDir
+          ? "已开启原文件备份 · 原子替换"
+          : "原子替换 · 页数校验 · 变大自动放弃"
+        : "保留原文件不动 · 保持原目录结构";
+
+    if (!hasSource) {
+      $("launchSummaryMain").textContent = "请先添加至少一个本地 PDF 文件夹";
+      $("launchSummarySub").textContent = `${presetLabel} · ${modeDesc} · ${safetyExtra}`;
+    } else {
+      const dirCount = Math.max(1, state.localSourceDirs.length);
+      const scanInfo = state.lastScanSummary
+        ? ` · ${state.lastScanSummary.pending_count.toLocaleString()} 个待压缩 (${fmtSize(state.lastScanSummary.total_bytes)})`
+        : "";
+      const limitDesc = limitNum ? ` · 仅试跑前 ${limitNum} 个` : "";
+      $("launchSummaryMain").textContent = `已选 ${dirCount} 个文件夹${scanInfo}${limitDesc}`;
+      $("launchSummarySub").textContent = `${presetLabel} · ${modeDesc} · ${safetyExtra}`;
+    }
+
+    if (limitNum) {
+      $("startJobBtnText").textContent = `试跑前 ${limitNum} 个 PDF`;
+    } else if (state.outputMode === "inplace") {
+      $("startJobBtnText").textContent = "开始原地批量优化";
+    } else {
+      $("startJobBtnText").textContent = "开始批量压缩到新目录";
+    }
+  }
 
   // ---------- CONFIG & PRESETS ----------
   function getCurrentConfig() {
@@ -195,6 +304,7 @@
 
     syncImageControlsDisabled();
     updatePresetHighlight();
+    updateWorkbenchSummary();
   }
 
   function syncImageControlsDisabled() {
@@ -211,6 +321,9 @@
     document.querySelectorAll(".preset-card").forEach((c) => {
       c.classList.toggle("active", c.dataset.preset === state.selectedPreset);
     });
+    document.querySelectorAll("#previewPresetPills .pill-chip").forEach((c) => {
+      c.classList.toggle("active", c.dataset.preset === state.selectedPreset);
+    });
     const presetInfo = state.system?.presets?.[state.selectedPreset];
     $("currentPresetChip").textContent = presetInfo ? presetInfo.label : "自定义参数";
   }
@@ -218,23 +331,57 @@
   function markCustomPreset() {
     state.selectedPreset = "custom";
     updatePresetHighlight();
+    updateWorkbenchSummary();
   }
 
   function renderPresets(presets) {
     const grid = $("presetGrid");
+    const previewPills = $("previewPresetPills");
     grid.innerHTML = "";
+    previewPills.innerHTML = "";
+
     Object.entries(presets).forEach(([key, info]) => {
+      const meta = PRESET_META[key] || { bars: 2, saving: "", short: info.description };
+      const titleShort = info.label.split("（")[0];
+      const barsHtml = [1, 2, 3, 4]
+        .map((n) => `<i class="${n <= meta.bars ? "on" : ""}"></i>`)
+        .join("");
+
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = `preset-card ${key === state.selectedPreset ? "active" : ""}`;
       btn.dataset.preset = key;
-      btn.innerHTML = `<strong>${info.label}</strong><span>${info.description}</span>`;
+      btn.innerHTML = `
+        <div class="preset-card-top">
+          <strong>${titleShort}</strong>
+          ${meta.recommended ? '<span class="preset-rec">推荐</span>' : ""}
+        </div>
+        <div class="preset-bars">${barsHtml}</div>
+        <span class="preset-desc">${meta.short}</span>
+        <span class="preset-saving">${meta.saving}</span>
+      `;
       btn.addEventListener("click", () => applyConfigToUI(info.config, key));
       grid.appendChild(btn);
+
+      // Sync quick pill inside Preview tab
+      const pill = document.createElement("button");
+      pill.type = "button";
+      pill.className = `pill-chip ${key === state.selectedPreset ? "active" : ""}`;
+      pill.dataset.preset = key;
+      pill.textContent = titleShort;
+      pill.addEventListener("click", () => {
+        applyConfigToUI(info.config, key);
+        if ($("previewLocalPath").value.trim()) {
+          runLocalPreview();
+        } else if (state.previewLastUploadFile) {
+          runUploadPreview(state.previewLastUploadFile);
+        }
+      });
+      previewPills.appendChild(pill);
     });
   }
 
-  // Slider listeners
+  // Slider & setting listeners
   $("cfgTargetDpi").addEventListener("input", (e) => {
     $("cfgTargetDpiVal").textContent = e.target.value;
     markCustomPreset();
@@ -245,12 +392,40 @@
   });
   $("cfgWorkers").addEventListener("input", (e) => {
     $("cfgWorkersVal").textContent = e.target.value;
+    updateWorkbenchSummary();
+  });
+  ["cfgMinSaving", "cfgSkipSmallKb", "localBackupDir", "localSourceDir"].forEach((id) => {
+    $(id).addEventListener("input", updateWorkbenchSummary);
   });
   ["cfgCompressImages", "cfgDownsample", "cfgGrayscale", "cfgOptimizeTransparent", "cfgSubsetFonts", "cfgStripMetadata", "cfgUseQpdf"].forEach((id) => {
     $(id).addEventListener("change", () => {
       syncImageControlsDisabled();
       markCustomPreset();
     });
+  });
+  ["cfgPreserveMtime", "cfgSkipAlready"].forEach((id) => {
+    $(id).addEventListener("change", updateWorkbenchSummary);
+  });
+
+  // ---------- TRIAL QUICK CHIPS ----------
+  function syncTrialChips(val) {
+    const str = val === null || val === undefined ? "" : String(val).trim();
+    document.querySelectorAll("#trialQuickChips .pill-chip").forEach((c) => {
+      c.classList.toggle("active", c.dataset.limit === str);
+    });
+  }
+
+  document.querySelectorAll("#trialQuickChips .pill-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      $("localLimitFiles").value = btn.dataset.limit;
+      syncTrialChips(btn.dataset.limit);
+      updateWorkbenchSummary();
+    });
+  });
+
+  $("localLimitFiles").addEventListener("input", (e) => {
+    syncTrialChips(e.target.value);
+    updateWorkbenchSummary();
   });
 
   // ---------- SOURCE & OUTPUT SWITCH ----------
@@ -260,30 +435,21 @@
       $("sourceModeSwitch").querySelectorAll(".seg-btn").forEach((b) => b.classList.toggle("active", b === btn));
       $("sourceLocalPanel").classList.toggle("hidden", state.sourceMode !== "local");
       $("sourceUploadPanel").classList.toggle("hidden", state.sourceMode !== "upload");
-      updateLaunchButtonLabel();
+      $("step3OutputCard").classList.toggle("hidden", state.sourceMode !== "local");
+      updateWorkbenchSummary();
     });
   });
 
-  document.querySelectorAll(".radio-card").forEach((card) => {
+  document.querySelectorAll(".mode-card").forEach((card) => {
     card.addEventListener("click", () => {
       state.outputMode = card.dataset.output;
-      document.querySelectorAll(".radio-card").forEach((c) => c.classList.toggle("active", c === card));
+      document.querySelectorAll(".mode-card").forEach((c) => c.classList.toggle("active", c === card));
       card.querySelector("input").checked = true;
       $("backupDirGroup").classList.toggle("hidden", state.outputMode !== "inplace");
       $("outputDirGroup").classList.toggle("hidden", state.outputMode !== "output_dir");
-      updateLaunchButtonLabel();
+      updateWorkbenchSummary();
     });
   });
-
-  function updateLaunchButtonLabel() {
-    if (state.sourceMode === "upload") {
-      $("startJobBtn").textContent = "开始上传并批量压缩";
-    } else if (state.outputMode === "inplace") {
-      $("startJobBtn").textContent = "开始原地批量优化";
-    } else {
-      $("startJobBtn").textContent = "开始批量压缩到新目录";
-    }
-  }
 
   // ---------- MULTI-FOLDER SOURCE LIST ----------
   function addLocalSourceDirs(rawPaths) {
@@ -296,20 +462,26 @@
         added++;
       }
     }
+    if (added > 0) state.lastScanSummary = null;
     renderLocalSourceDirs();
+    updateWorkbenchSummary();
     return added;
   }
 
   function removeLocalSourceDir(idx) {
     const [removed] = state.localSourceDirs.splice(idx, 1);
     if (removed) delete state.folderScanStats[removed];
+    if (!state.localSourceDirs.length) {
+      state.lastScanSummary = null;
+      $("scanResultBox").classList.add("hidden");
+    }
     renderLocalSourceDirs();
+    updateWorkbenchSummary();
   }
 
   function collectLocalSourceDirs() {
     const inputVal = $("localSourceDir").value.trim();
     if (inputVal) {
-      // Allow pasting multiple paths separated by newlines
       const parts = inputVal.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
       addLocalSourceDirs(parts);
       $("localSourceDir").value = "";
@@ -322,18 +494,25 @@
     $("clearSourceDirsBtn").classList.toggle("hidden", count === 0);
     $("sourceDirsCount").textContent =
       count > 0
-        ? `已添加 ${count} 个源文件夹（支持继续追加，自动递归子目录与去重）`
-        : "已添加 0 个文件夹（可点击「浏览添加」「系统多选」，或直接粘贴路径回车添加）";
+        ? `已添加 ${count} 个文件夹（自动递归子目录与去重）`
+        : "尚未添加文件夹 — 点击上方「选择文件夹」可一次选择多个目录";
 
     const list = $("sourceDirsList");
     list.innerHTML = "";
     state.localSourceDirs.forEach((dirPath, idx) => {
       const st = state.folderScanStats[dirPath];
       const metaText = st ? `${st.total_files.toLocaleString()} 个 PDF · ${fmtSize(st.total_bytes)}` : "";
+      const folderName = dirPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || dirPath;
       const row = document.createElement("div");
       row.className = "source-dir-item";
       row.innerHTML = `
-        <span class="source-dir-path" title="${dirPath}">📁 ${dirPath}</span>
+        <span class="source-dir-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        </span>
+        <div class="source-dir-info">
+          <span class="source-dir-name">${folderName}</span>
+          <span class="source-dir-path" title="${dirPath}">${dirPath}</span>
+        </div>
         ${metaText ? `<span class="source-dir-meta">${metaText}</span>` : ""}
         <button type="button" class="source-dir-remove" title="移除该文件夹">✕</button>
       `;
@@ -351,12 +530,7 @@
     const parts = val.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     const added = addLocalSourceDirs(parts);
     $("localSourceDir").value = "";
-    if (added > 0) {
-      toast(`已添加 ${added} 个文件夹，正在自动扫描...`, "success");
-      scanLocalDirectory();
-    } else {
-      scanLocalDirectory();
-    }
+    if (added > 0) toast(`已添加 ${added} 个文件夹到列表`, "success");
   });
 
   $("localSourceDir").addEventListener("keydown", (e) => {
@@ -369,8 +543,10 @@
   $("clearSourceDirsBtn").addEventListener("click", () => {
     state.localSourceDirs = [];
     state.folderScanStats = {};
+    state.lastScanSummary = null;
     renderLocalSourceDirs();
     $("scanResultBox").classList.add("hidden");
+    updateWorkbenchSummary();
   });
 
   // ---------- FOLDER BROWSER MODAL ----------
@@ -405,7 +581,10 @@
       data.entries.forEach((ent) => {
         const div = document.createElement("div");
         div.className = "folder-entry";
-        div.innerHTML = `<span>${ent.is_drive ? "💾" : "📁"}</span><span>${ent.name}</span>`;
+        const icon = ent.is_drive
+          ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="10" y1="12" x2="10.01" y2="12"/></svg>`
+          : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
+        div.innerHTML = `<span class="text-accent" style="display:flex;">${icon}</span><span>${ent.name}</span>`;
         div.addEventListener("click", () => loadFolderListing(ent.path));
         list.appendChild(div);
       });
@@ -423,20 +602,16 @@
   });
   $("folderGoBtn").addEventListener("click", () => loadFolderListing($("folderCurrentInput").value.trim()));
   $("confirmFolderBtn").addEventListener("click", () => {
-    let shouldScan = false;
     if (state.folderCurrentPath) {
       if (state.folderModalAppendSource) {
         const added = addLocalSourceDirs([state.folderCurrentPath]);
-        if (added > 0) toast("已添加文件夹，正在自动扫描...", "success");
-        shouldScan = true;
+        if (added > 0) toast("已添加文件夹，可继续添加更多目录", "success");
       } else if (state.folderModalTargetInput) {
         state.folderModalTargetInput.value = state.folderCurrentPath;
+        updateWorkbenchSummary();
       }
     }
     $("folderModal").classList.add("hidden");
-    if (shouldScan) {
-      scanLocalDirectory();
-    }
   });
   $("closeFolderModalBtn").addEventListener("click", () => $("folderModal").classList.add("hidden"));
   $("cancelFolderModalBtn").addEventListener("click", () => $("folderModal").classList.add("hidden"));
@@ -472,7 +647,6 @@
       return;
     }
     $("scanDirBtn").disabled = true;
-    $("scanDirBtn").textContent = "扫描中...";
     try {
       const cfg = getCurrentConfig();
       const data = await api("/api/scan", {
@@ -485,7 +659,6 @@
           skip_already_optimized: cfg.skip_already_optimized,
         }),
       });
-      // Update canonical resolved paths and per-folder stats
       if (Array.isArray(data.folders) && data.folders.length) {
         state.localSourceDirs = data.folders.map((f) => f.path);
         state.folderScanStats = {};
@@ -495,6 +668,7 @@
         renderLocalSourceDirs();
       }
 
+      state.lastScanSummary = data;
       $("scanTotalFiles").textContent = data.total_files.toLocaleString();
       $("scanTotalBytes").textContent = fmtSize(data.total_bytes);
       $("scanPendingFiles").textContent = data.pending_count.toLocaleString();
@@ -509,6 +683,7 @@
         sel.appendChild(opt);
       });
       $("scanResultBox").classList.remove("hidden");
+      updateWorkbenchSummary();
       toast(
         `扫描完成：${data.folders?.length || paths.length} 个目录共发现 ${data.total_files} 个 PDF（${fmtSize(data.total_bytes)}）`,
         "success"
@@ -517,7 +692,6 @@
       toast(err.message, "error");
     } finally {
       $("scanDirBtn").disabled = false;
-      $("scanDirBtn").textContent = "扫描统计";
     }
   }
 
@@ -526,6 +700,7 @@
     const sample = $("scanSampleSelect").value;
     if (!sample) return;
     $("previewLocalPath").value = sample;
+    state.previewLastUploadFile = null;
     switchTab("preview");
     runLocalPreview();
   });
@@ -540,11 +715,8 @@
       added++;
     }
     renderUploadQueue();
-    if (added > 0) {
-      toast(`已添加 ${added} 个 PDF 到待上传队列，请点击右侧「开始上传并批量压缩」`, "success");
-    } else if (items.length > 0) {
-      toast("所选内容中未发现 .pdf 文件", "error");
-    }
+    updateWorkbenchSummary();
+    if (added > 0) toast(`已添加 ${added} 个 PDF 到待上传队列`, "success");
   }
 
   function renderUploadQueue() {
@@ -578,6 +750,7 @@
   $("clearUploadQueueBtn").addEventListener("click", () => {
     state.uploadQueue = [];
     renderUploadQueue();
+    updateWorkbenchSummary();
   });
 
   async function readEntryRecursively(entry, prefix = "") {
@@ -614,8 +787,6 @@
   dropZone.addEventListener("drop", async (e) => {
     e.preventDefault();
     dropZone.classList.remove("dragover");
-    // IMPORTANT: Extract entries/files synchronously before any await, because
-    // browsers clear DataTransferItemList as soon as the event handler yields.
     const dtItems = Array.from(e.dataTransfer.items || []);
     const entries = [];
     const directFiles = [];
@@ -667,15 +838,15 @@
     const limitFiles = limitVal ? Number(limitVal) : null;
 
     if (state.outputMode === "inplace" && !backupDir) {
+      const scopeHint = limitFiles ? `前 ${limitFiles} 个待优化` : "全部待优化";
       const ok = await showConfirm(
-        `即将以【原地覆盖】模式直接优化 ${sourceDirs.length} 个目录中的 PDF 文件（未设置备份目录）。\n\n程序已启用同盘原子写入与页数完整性校验，变大文件会自动放弃覆盖。\n确定开始吗？`,
+        `即将以【原地覆盖】模式直接优化 ${sourceDirs.length} 个目录中的${scopeHint} PDF 文件（未设置备份目录）。\n\n程序已启用同盘原子写入与页数完整性校验，压缩后变大或未达阈值会自动保留原文件。\n确定开始吗？`,
         "确认原地覆盖优化"
       );
       if (!ok) return;
     }
 
     $("startJobBtn").disabled = true;
-    // Close any prior SSE stream before creating a new job to free browser HTTP connection slots
     closeStream();
     try {
       const job = await api("/api/jobs/local", {
@@ -708,6 +879,7 @@
       return;
     }
     $("startJobBtn").disabled = true;
+    closeStream();
     $("uploadBarWrap").classList.remove("hidden");
     $("uploadBarFill").style.width = "0%";
     $("uploadProgressText").textContent = `正在上传 0 / ${state.uploadQueue.length} ...`;
@@ -748,11 +920,11 @@
       }
 
       await Promise.all(Array.from({ length: Math.min(concurrency, total) }, worker));
-      // Ensure job is running / picks up final uploaded files
       await api(`/api/jobs/${job.id}/start`, { method: "POST" });
 
       state.uploadQueue = [];
       renderUploadQueue();
+      updateWorkbenchSummary();
       toast(`全部 ${total} 个 PDF 上传完成，正在全力压缩中`, "success");
       switchTab("jobs", { skipLoad: true });
       await selectJob(job.id);
@@ -764,19 +936,56 @@
     }
   }
 
-  // ---------- SINGLE FILE PREVIEW ----------
+  // ---------- SINGLE FILE PREVIEW & SPLIT CURTAIN ----------
+  function syncPreviewViewMode() {
+    $("previewSplitView").classList.toggle("hidden", state.previewViewMode !== "split");
+    $("previewSideView").classList.toggle("hidden", state.previewViewMode !== "side");
+  }
+
+  $("previewViewModeSwitch").querySelectorAll(".seg-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.previewViewMode = btn.dataset.view;
+      $("previewViewModeSwitch").querySelectorAll(".seg-btn").forEach((b) => b.classList.toggle("active", b === btn));
+      syncPreviewViewMode();
+    });
+  });
+
+  function setSplitPercent(pct) {
+    const clamped = Math.max(0, Math.min(100, Number(pct)));
+    $("splitOverlay").style.clipPath = `inset(0 ${100 - clamped}% 0 0)`;
+    $("splitHandle").style.left = `${clamped}%`;
+  }
+
+  $("splitRange").addEventListener("input", (e) => setSplitPercent(e.target.value));
+
   function showPreviewResult(data) {
+    state.previewTotalPages = data.pages || 1;
+    $("previewEmptyState").classList.add("hidden");
+    $("previewTotalPagesText").textContent = `/ ${data.pages} 页`;
+    $("previewPageNum").value = String(data.rendered_page + 1);
+    $("previewPageNum").max = String(data.pages);
+
     $("prevOrigSize").textContent = fmtSize(data.orig_size);
     $("prevNewSize").textContent = fmtSize(data.new_size);
     $("prevSaved").textContent = `${fmtSize(data.saved_bytes)} (-${data.saving_percent}%)`;
     $("prevMeta").textContent = `${statusLabel(data.status)} · ${data.duration_ms}ms · 优化 ${data.images_optimized} 图`;
+
     const pText = `第 ${data.rendered_page + 1} / ${data.pages} 页`;
     $("prevPageLabelOrig").textContent = pText;
     $("prevPageLabelComp").textContent = pText;
+    $("splitPageOrig").textContent = pText;
+    $("splitPageComp").textContent = pText;
+
     $("prevImgOrig").src = data.orig_image_url;
     $("prevImgComp").src = data.comp_image_url;
+    $("splitImgOrig").src = data.orig_image_url;
+    $("splitImgComp").src = data.comp_image_url;
     $("prevImgOrig").classList.remove("zoomed");
     $("prevImgComp").classList.remove("zoomed");
+    $("splitRange").value = "50";
+    setSplitPercent(50);
+
+    syncPreviewViewMode();
     $("previewResultArea").classList.remove("hidden");
   }
 
@@ -788,6 +997,7 @@
     }
     const page = Math.max(0, (Number($("previewPageNum").value) || 1) - 1);
     $("runLocalPreviewBtn").disabled = true;
+    $("previewEmptyState").classList.add("hidden");
     $("previewLoading").classList.remove("hidden");
     $("previewResultArea").classList.add("hidden");
     try {
@@ -799,17 +1009,18 @@
       showPreviewResult(data);
     } catch (err) {
       toast(err.message, "error");
+      $("previewEmptyState").classList.remove("hidden");
     } finally {
       $("runLocalPreviewBtn").disabled = false;
       $("previewLoading").classList.add("hidden");
     }
   }
 
-  $("runLocalPreviewBtn").addEventListener("click", runLocalPreview);
-  $("previewUploadInput").addEventListener("change", async (e) => {
-    const file = e.target.files?.[0];
+  async function runUploadPreview(file) {
     if (!file) return;
+    state.previewLastUploadFile = file;
     const page = Math.max(0, (Number($("previewPageNum").value) || 1) - 1);
+    $("previewEmptyState").classList.add("hidden");
     $("previewLoading").classList.remove("hidden");
     $("previewResultArea").classList.add("hidden");
     try {
@@ -821,10 +1032,48 @@
       showPreviewResult(data);
     } catch (err) {
       toast(err.message, "error");
+      $("previewEmptyState").classList.remove("hidden");
     } finally {
       $("previewLoading").classList.add("hidden");
-      e.target.value = "";
     }
+  }
+
+  function rerunCurrentPreview() {
+    if ($("previewLocalPath").value.trim()) {
+      runLocalPreview();
+    } else if (state.previewLastUploadFile) {
+      runUploadPreview(state.previewLastUploadFile);
+    }
+  }
+
+  $("runLocalPreviewBtn").addEventListener("click", () => {
+    state.previewLastUploadFile = null;
+    runLocalPreview();
+  });
+  $("previewUploadInput").addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    $("previewLocalPath").value = "";
+    await runUploadPreview(file);
+  });
+  $("previewPrevPageBtn").addEventListener("click", () => {
+    const cur = Number($("previewPageNum").value) || 1;
+    if (cur > 1) {
+      $("previewPageNum").value = String(cur - 1);
+      rerunCurrentPreview();
+    }
+  });
+  $("previewNextPageBtn").addEventListener("click", () => {
+    const cur = Number($("previewPageNum").value) || 1;
+    const maxP = state.previewTotalPages || 9999;
+    if (cur < maxP) {
+      $("previewPageNum").value = String(cur + 1);
+      rerunCurrentPreview();
+    }
+  });
+  $("previewPageNum").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") rerunCurrentPreview();
   });
 
   ["prevImgOrig", "prevImgComp"].forEach((id) => {
@@ -836,10 +1085,19 @@
   });
 
   // ---------- JOBS MONITOR & SSE ----------
-  function updateRunningBadgeFromCache() {
+  function updateSidebarGlobalStats() {
     const runningCount = state.jobsCache.filter((j) => j.status === "running").length;
+    const totalSaved = state.jobsCache.reduce((acc, j) => acc + (j.stats?.saved_bytes || 0), 0);
+    const totalDoneFiles = state.jobsCache.reduce((acc, j) => acc + (j.stats?.done || 0), 0);
+
     $("runningBadge").textContent = String(runningCount);
     $("runningBadge").classList.toggle("hidden", runningCount === 0);
+    $("jobsCountPill").textContent = String(state.jobsCache.length);
+    $("totalSavedHero").textContent = fmtSize(totalSaved);
+    $("totalJobsMeta").textContent = state.jobsCache.length
+      ? `${state.jobsCache.length} 个任务 · 已优化 ${totalDoneFiles.toLocaleString()} 个 PDF`
+      : "暂无历史任务";
+
     if (runningCount > 0) {
       ensureSidebarSyncTimer();
     } else {
@@ -851,7 +1109,7 @@
     if (state.sidebarSyncTimer) return;
     state.sidebarSyncTimer = setInterval(() => {
       if (state.jobsCache.some((j) => j.status === "running" || j.status === "created")) {
-        loadJobsList({ skipAutoSelect: true });
+        loadJobsList({ skipAutoSelect: true, silent: true });
       } else {
         stopSidebarSyncTimer();
       }
@@ -887,15 +1145,19 @@
       if (saved) {
         saved.textContent = `省 ${fmtSize(st.saved_bytes || 0)}`;
       }
+      const bar = item.querySelector(".js-job-bar");
+      if (bar) {
+        bar.style.width = `${Math.min(100, st.progress_bytes_pct || 0)}%`;
+      }
     }
-    updateRunningBadgeFromCache();
+    updateSidebarGlobalStats();
   }
 
   async function loadJobsList(opts = {}) {
     const reqSeq = ++state.jobsListSeq;
     try {
       const data = await api("/api/jobs?limit=50");
-      if (reqSeq !== state.jobsListSeq) return; // Discard stale out-of-order response
+      if (reqSeq !== state.jobsListSeq) return;
       state.jobsCache = data.jobs || [];
 
       const list = $("jobsList");
@@ -903,7 +1165,7 @@
 
       if (!state.jobsCache.length) {
         list.innerHTML = `<div class="empty-state">暂无任务</div>`;
-        updateRunningBadgeFromCache();
+        updateSidebarGlobalStats();
         return;
       }
 
@@ -912,6 +1174,7 @@
         el.className = `job-item ${j.id === state.activeJobId ? "active" : ""}`;
         el.dataset.jobId = j.id;
         const st = j.stats || {};
+        const pct = Math.min(100, st.progress_bytes_pct || 0);
         el.innerHTML = `
           <div class="job-item-top">
             <span class="job-item-name" title="${j.name}">${j.name}</span>
@@ -921,12 +1184,15 @@
             <span class="js-job-count">${st.completed_files || 0}/${st.total_files || 0} 文件</span>
             <span class="text-success js-job-saved">省 ${fmtSize(st.saved_bytes || 0)}</span>
           </div>
+          <div class="mini-progress">
+            <div class="mini-progress-fill js-job-bar" style="width: ${pct}%"></div>
+          </div>
         `;
         el.addEventListener("click", () => selectJob(j.id));
         list.appendChild(el);
       });
 
-      updateRunningBadgeFromCache();
+      updateSidebarGlobalStats();
 
       if (!opts.skipAutoSelect && !state.activeJobId && state.jobsCache.length > 0) {
         selectJob(state.jobsCache[0].id);
@@ -1029,7 +1295,6 @@
       if (state.eventSource === es) {
         es.close();
         state.eventSource = null;
-        // Seamless fallback polling so UI never freezes if SSE drops
         if (state.activeJobId === jobId) {
           startFallbackPolling(jobId);
         }
@@ -1061,7 +1326,6 @@
     if (job.backup_dir) pathParts.push(`备份: ${job.backup_dir}`);
     $("jdPaths").textContent = pathParts.join("  |  ");
 
-    // Controls visibility
     $("jdPauseBtn").classList.toggle("hidden", job.status !== "running");
     $("jdResumeBtn").classList.toggle("hidden", !["paused", "created"].includes(job.status));
     $("jdRetryBtn").classList.toggle("hidden", !(st.failed > 0 && job.status !== "running"));
@@ -1072,12 +1336,10 @@
     $("jdDownloadZipBtn").classList.toggle("hidden", !showZip);
     if (showZip) $("jdDownloadZipBtn").href = `/api/jobs/${job.id}/download-zip`;
 
-    // Progress
     $("jdPctBytes").textContent = `${st.progress_bytes_pct ?? 0}%`;
     $("jdFileProgress").textContent = `${(st.completed_files || 0).toLocaleString()} / ${(st.total_files || 0).toLocaleString()}`;
     $("jdProgressBar").style.width = `${Math.min(100, st.progress_bytes_pct || 0)}%`;
 
-    // KPIs
     $("jdSavedBytes").textContent = fmtSize(st.saved_bytes || 0);
     $("jdSavedPct").textContent = `压缩率 -${st.saving_percent || 0}%`;
     $("jdProcessedSize").textContent = `${fmtSize(st.processed_orig_bytes || 0)} → ${fmtSize(st.processed_new_bytes || 0)}`;
@@ -1091,7 +1353,6 @@
     $("jdFailedCount").textContent = (st.failed || 0).toLocaleString();
     $("jdProcessingCount").textContent = `处理中: ${st.processing || 0}`;
 
-    // Active files chips
     const active = live.active_files || [];
     $("jdActiveFilesWrap").classList.toggle("hidden", active.length === 0);
     if (active.length) {
@@ -1160,21 +1421,21 @@
     await api(`/api/jobs/${state.activeJobId}/start`, { method: "POST" });
     toast("任务已继续执行", "success");
     connectJobStream(state.activeJobId);
-    loadJobsList();
+    loadJobsList({ skipAutoSelect: true });
   });
   $("jdRetryBtn").addEventListener("click", async () => {
     if (!state.activeJobId) return;
     const res = await api(`/api/jobs/${state.activeJobId}/retry-failed`, { method: "POST" });
     toast(`已将 ${res.retried} 个失败文件重新加入队列`, "success");
     connectJobStream(state.activeJobId);
-    loadJobsList();
+    loadJobsList({ skipAutoSelect: true });
   });
   $("jdCancelBtn").addEventListener("click", async () => {
     if (!state.activeJobId) return;
     if (!(await showConfirm("确定要取消当前任务吗？（已完成的文件不受影响）", "确认取消任务"))) return;
     await api(`/api/jobs/${state.activeJobId}/cancel`, { method: "POST" });
     toast("任务已取消");
-    loadJobsList();
+    loadJobsList({ skipAutoSelect: true });
   });
   $("jdOpenDirBtn").addEventListener("click", async () => {
     const j = state.activeJobDetail;
@@ -1201,7 +1462,7 @@
     toast("任务记录已删除");
   });
 
-  // Table filter/search/sort/pagination
+  // Table filters
   $("fileStatusFilters").querySelectorAll(".filter-pill").forEach((pill) => {
     pill.addEventListener("click", () => {
       state.fileFilter = pill.dataset.status;
@@ -1237,7 +1498,7 @@
     state.filePage++;
     loadJobFiles();
   });
-  $("refreshJobsBtn").addEventListener("click", loadJobsList);
+  $("refreshJobsBtn").addEventListener("click", () => loadJobsList({ skipAutoSelect: true }));
 
   $("clearFpBtn").addEventListener("click", async () => {
     if (!(await showConfirm("清空「已优化文件缓存」后，再次扫描目录时会重新处理之前压缩过的 PDF。确定清空吗？", "确认清空缓存"))) return;
@@ -1245,6 +1506,7 @@
     toast(`已清空 ${res.removed} 条历史跳过指纹`, "success");
   });
 
+  // ---------- DESKTOP BRIDGE (pywebview) ----------
   function initDesktopBridge() {
     const btn = $("openInBrowserBtn");
     if (!btn) return;
@@ -1275,13 +1537,13 @@
     try {
       const sys = await api("/api/system");
       state.system = sys;
-      $("cpuBadge").textContent = `${sys.cpu_count} 核 CPU · 推荐 ${sys.recommended_workers} 进程`;
+      $("cpuBadgeText").textContent = `${sys.cpu_count} 核 CPU · 推荐 ${sys.recommended_workers} 进程`;
       $("cfgWorkers").max = String(Math.max(1, sys.cpu_count));
       $("cfgWorkers").value = String(sys.recommended_workers);
       $("cfgWorkersVal").textContent = String(sys.recommended_workers);
       renderPresets(sys.presets);
       applyConfigToUI(sys.presets.balanced.config, "balanced");
-      updateLaunchButtonLabel();
+      updateWorkbenchSummary();
       loadJobsList();
     } catch (err) {
       toast(`初始化失败: ${err.message}`, "error");

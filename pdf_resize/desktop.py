@@ -161,7 +161,7 @@ def run_desktop(
         width=1360,
         height=880,
         min_size=(960, 640),
-        background_color="#0e1117",
+        background_color="#0b0d12",
         js_api=api,
         text_select=True,
     )
