@@ -28,13 +28,13 @@ jobs:
           pip install -r requirements.txt pyinstaller pywebview pytest httpx
 
       - name: Run unit tests
-        run: pytest -v
+        run: python -m pytest -v
 
       - name: Generate Windows icon
         run: python scripts/make_icon.py
 
       - name: Build standalone PDF Resize.exe
-        run: pyinstaller --noconfirm --clean "PDF Resize.spec"
+        run: python -m PyInstaller --noconfirm --clean "PDF Resize.spec"
 
       - name: Smoke test frozen Windows .exe (HTTP + ProcessPoolExecutor)
         shell: python
@@ -141,7 +141,7 @@ jobs:
           pip install -r requirements.txt pyinstaller pywebview pytest httpx
 
       - name: Run unit tests
-        run: pytest -v
+        run: python -m pytest -v
 
       - name: Build macOS .app and .dmg
         run: PYTHON_BIN="$(which python)" ./build_mac_app.sh
