@@ -5,6 +5,8 @@ __pycache__/
 data/
 .pytest_cache/
 *.log
+macos/.build/
+macos/.swiftpm/
 build/
 dist/
 *.dmg
