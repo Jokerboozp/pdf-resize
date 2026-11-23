@@ -403,3 +403,71 @@ def test_shared_resources_pdf_fast_compression_and_preview_upload(tmp_path: Path
     assert pdata["saved_bytes"] > 0
     assert client.get(pdata["orig_image_url"]).status_code == 200
     assert client.get(pdata["comp_image_url"]).status_code == 200
+
+
+def test_repeated_trial_runs_advance_to_next_files_and_exclude_output(tmp_path: Path) -> None:
+    """Running a trial run (limit_files) repeatedly must pick the NEXT pending files, never stall."""
+    src_dir = tmp_path / "library"
+    nested_backup = src_dir / "_backups"
+    src_dir.mkdir()
+    for i in range(4):
+        _make_photo_pdf(src_dir / f"book_{i}.pdf", pages=1)
+
+    storage = Storage(tmp_path / "trial.db")
+    mgr = JobManager(storage, recover=True)
+    try:
+        cfg = apply_preset("balanced", {"workers": 2, "skip_already_optimized": True})
+
+        # Trial run #1: limit_files=2 -> optimizes book_0, book_1
+        j1 = mgr.create_local_job(
+            source_dirs=[str(src_dir)],
+            output_mode="inplace",
+            output_dir=None,
+            backup_dir=str(nested_backup),
+            config=cfg,
+            limit_files=2,
+            auto_start=True,
+        )
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            d1 = mgr.get_job_detail(j1["id"])
+            if d1 and d1["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.15)
+        assert d1 is not None and d1["status"] == "completed"
+        assert d1["stats"]["total_files"] == 2
+        assert d1["stats"]["done"] == 2
+
+        # Trial run #2: limit_files=2 -> skips book_0, book_1 AND ignores nested_backup; optimizes book_2, book_3
+        j2 = mgr.create_local_job(
+            source_dirs=[str(src_dir)],
+            output_mode="inplace",
+            output_dir=None,
+            backup_dir=str(nested_backup),
+            config=cfg,
+            limit_files=2,
+            auto_start=True,
+        )
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            d2 = mgr.get_job_detail(j2["id"])
+            if d2 and d2["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.15)
+        assert d2 is not None and d2["status"] == "completed"
+        assert d2["stats"]["total_files"] == 2
+        assert d2["stats"]["done"] == 2
+
+        # Trial run #3: all 4 already optimized -> raises clear friendly message instead of stalling
+        with pytest.raises(ValueError, match="重置跳过缓存"):
+            mgr.create_local_job(
+                source_dirs=[str(src_dir)],
+                output_mode="inplace",
+                output_dir=None,
+                backup_dir=str(nested_backup),
+                config=cfg,
+                limit_files=2,
+                auto_start=True,
+            )
+    finally:
+        storage.close()

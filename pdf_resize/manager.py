@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing
 import os
 import sys
 import threading
@@ -70,6 +71,7 @@ def scan_pdf_directories(
     skip_smaller_than_kb: int = 0,
     fingerprints: Optional[dict[str, tuple[int, float]]] = None,
     limit_files: Optional[int] = None,
+    exclude_dirs: Optional[list[str | Path]] = None,
 ) -> dict[str, Any]:
     """Fast recursive scanner supporting one or multiple folders with deduplication."""
     if not root_dirs:
@@ -86,6 +88,14 @@ def scan_pdf_directories(
             seen_roots.add(key)
             resolved_roots.append(p)
 
+    excluded_keys: set[str] = set()
+    for ex in exclude_dirs or []:
+        try:
+            ep = Path(ex).expanduser().resolve()
+            excluded_keys.add(str(ep).lower() if os.name == "nt" else str(ep))
+        except OSError:
+            continue
+
     multi_root = len(resolved_roots) > 1
     root_labels = _make_unique_root_labels(resolved_roots)
 
@@ -95,6 +105,7 @@ def scan_pdf_directories(
     total_bytes = 0
     already_optimized_count = 0
     too_small_count = 0
+    pending_total = 0
     min_bytes = max(0, skip_smaller_than_kb) * 1024
 
     for root, label in zip(resolved_roots, root_labels):
@@ -103,8 +114,10 @@ def scan_pdf_directories(
         f_pending = 0
 
         def _walk(current: Path) -> None:
-            nonlocal total_bytes, already_optimized_count, too_small_count
+            nonlocal total_bytes, already_optimized_count, too_small_count, pending_total
             nonlocal f_count, f_bytes, f_pending
+            if limit_files and pending_total >= limit_files:
+                return
             try:
                 with os.scandir(current) as it:
                     entries = sorted(it, key=lambda e: e.name.lower())
@@ -112,15 +125,24 @@ def scan_pdf_directories(
                 return
 
             for entry in entries:
-                if limit_files and len(files) >= limit_files:
+                if limit_files and pending_total >= limit_files:
                     return
                 try:
                     if entry.is_dir(follow_symlinks=False):
                         if recursive:
-                            _walk(Path(entry.path))
+                            sub = Path(entry.path).resolve()
+                            sub_key = str(sub).lower() if os.name == "nt" else str(sub)
+                            if sub_key in excluded_keys:
+                                continue
+                            _walk(sub)
                     elif entry.is_file(follow_symlinks=False):
                         name_lower = entry.name.lower()
-                        if not name_lower.endswith(".pdf") or name_lower.endswith(TMP_SUFFIX):
+                        # Ignore non-PDFs, our temp files, and macOS AppleDouble resource forks (._*.pdf)
+                        if (
+                            not name_lower.endswith(".pdf")
+                            or name_lower.endswith(TMP_SUFFIX)
+                            or entry.name.startswith("._")
+                        ):
                             continue
                         abs_path = str(Path(entry.path).resolve())
                         dedup_key = abs_path.lower() if os.name == "nt" else abs_path
@@ -144,11 +166,18 @@ def scan_pdf_directories(
                             status = "skipped_small"
                             too_small_count += 1
 
+                        # When doing a trial run (limit_files), only collect pending files so
+                        # repeated trial runs pick the NEXT N unoptimized files instead of re-picking
+                        # the same already-optimized files.
+                        if limit_files and status != "pending":
+                            continue
+
                         total_bytes += size
                         f_count += 1
                         f_bytes += size
                         if status == "pending":
                             f_pending += 1
+                            pending_total += 1
 
                         files.append(
                             {
@@ -181,7 +210,7 @@ def scan_pdf_directories(
         "total_bytes": total_bytes,
         "already_optimized_count": already_optimized_count,
         "too_small_count": too_small_count,
-        "pending_count": len(files) - already_optimized_count - too_small_count,
+        "pending_count": pending_total,
         "files": files,
     }
 
@@ -240,13 +269,19 @@ class _ActiveJobRuntime:
 
 
 class JobManager:
-    def __init__(self, storage: Storage) -> None:
+    def __init__(self, storage: Storage, *, recover: bool = False) -> None:
         self.storage = storage
-        self.storage.recover_interrupted_jobs()
+        if recover:
+            self.storage.recover_interrupted_jobs()
         self._lock = threading.RLock()
         self._runtimes: dict[str, _ActiveJobRuntime] = {}
         self._version_cond = threading.Condition()
         self._version = 0
+
+    def recover_on_startup(self) -> None:
+        """Reset any jobs/files left running from a prior crashed server process."""
+        self.storage.recover_interrupted_jobs()
+        self._notify_update()
 
     def _notify_update(self) -> None:
         with self._version_cond:
@@ -297,6 +332,12 @@ class JobManager:
         if bkp_root:
             bkp_root.mkdir(parents=True, exist_ok=True)
 
+        exclude_dirs: list[Path] = []
+        if out_root is not None:
+            exclude_dirs.append(out_root)
+        if bkp_root is not None:
+            exclude_dirs.append(bkp_root)
+
         fingerprints = (
             self.storage.get_all_fingerprints()
             if (config.skip_already_optimized and output_mode == "inplace")
@@ -308,8 +349,18 @@ class JobManager:
             skip_smaller_than_kb=config.skip_smaller_than_kb,
             fingerprints=fingerprints,
             limit_files=limit_files,
+            exclude_dirs=exclude_dirs,
         )
         if scan["total_files"] == 0:
+            if scan["already_optimized_count"] > 0:
+                raise ValueError(
+                    f"所选目录中的 {scan['already_optimized_count']} 个 PDF 均已在之前优化过。"
+                    "如需重新试跑或再次压缩，请点击右上角「重置跳过缓存」或取消勾选「自动跳过历史已优化文件」。"
+                )
+            if scan["too_small_count"] > 0:
+                raise ValueError(
+                    f"所选目录中的 {scan['too_small_count']} 个 PDF 均小于设定的最小体积阈值，无可压缩文件。"
+                )
             raise ValueError("所选目录下未找到任何 PDF 文件")
 
         job_id = uuid.uuid4().hex[:12]
@@ -487,7 +538,17 @@ class JobManager:
         inplace = job["output_mode"] == "inplace"
         cpu_count = os.cpu_count() or 8
         stats0 = self.storage.get_job_stats(job_id)
-        pending0 = max(1, stats0.get("pending", 1))
+        pending_count = int(stats0.get("pending", 0))
+
+        # Fast path: no pending files for a local_dir job — complete immediately without spawning processes
+        if job["source_type"] == "local_dir" and pending_count == 0:
+            self.storage.update_job_status(job_id, "completed", set_finished=True)
+            with self._lock:
+                self._runtimes.pop(job_id, None)
+            self._notify_update()
+            return
+
+        pending0 = max(1, pending_count)
         if job["source_type"] == "local_dir":
             max_workers = max(1, min(cfg.workers, cpu_count, pending0))
         else:
@@ -500,8 +561,11 @@ class JobManager:
         in_flight: dict[Future, dict[str, Any]] = {}
 
         try:
-            # max_tasks_per_child recycles worker processes periodically (Python 3.11+)
-            pool_kwargs: dict[str, Any] = {"max_workers": max_workers}
+            # Explicit 'spawn' context avoids fork-with-threads deadlocks on macOS/Linux
+            pool_kwargs: dict[str, Any] = {
+                "max_workers": max_workers,
+                "mp_context": multiprocessing.get_context("spawn"),
+            }
             if sys.version_info >= (3, 11):
                 pool_kwargs["max_tasks_per_child"] = 25
             with ProcessPoolExecutor(**pool_kwargs) as executor:
@@ -526,6 +590,13 @@ class JobManager:
                                     rt.active_files[rec["id"]] = rec["rel_path"]
                             if batch:
                                 self._notify_update()
+                    elif rt.cancel_event.is_set():
+                        # Cancel any queued futures that haven't started executing yet
+                        for fut in list(in_flight.keys()):
+                            if fut.cancel():
+                                rec = in_flight.pop(fut)
+                                with rt.lock:
+                                    rt.active_files.pop(rec["id"], None)
 
                     if not in_flight:
                         break
@@ -604,4 +675,7 @@ class JobManager:
             self.storage.reset_job_processing_to_pending(job_id)
             self.storage.update_job_status(job_id, "failed", set_finished=True)
         finally:
+            with self._lock:
+                if self._runtimes.get(job_id) is rt:
+                    self._runtimes.pop(job_id, None)
             self._notify_update()

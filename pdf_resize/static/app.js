@@ -9,7 +9,11 @@
     uploadQueue: [], // [{ file, relPath }]
     activeJobId: null,
     activeJobDetail: null,
+    jobsCache: [],
+    jobsListSeq: 0,
     eventSource: null,
+    pollTimer: null,
+    sidebarSyncTimer: null,
     fileFilter: "all",
     fileSearch: "",
     fileSort: "id:asc",
@@ -86,18 +90,31 @@
       $("confirmModalTitle").textContent = title;
       $("confirmModalBody").textContent = message;
       modal.classList.remove("hidden");
+      let settled = false;
       const cleanup = (val) => {
+        if (settled) return;
+        settled = true;
         modal.classList.add("hidden");
         $("confirmOkBtn").removeEventListener("click", onOk);
         $("confirmCancelBtn").removeEventListener("click", onCancel);
         $("closeConfirmModalBtn").removeEventListener("click", onCancel);
+        modal.removeEventListener("click", onBackdrop);
+        window.removeEventListener("keydown", onKey);
         resolve(val);
       };
       const onOk = () => cleanup(true);
       const onCancel = () => cleanup(false);
+      const onBackdrop = (ev) => {
+        if (ev.target === modal) cleanup(false);
+      };
+      const onKey = (ev) => {
+        if (ev.key === "Escape") cleanup(false);
+      };
       $("confirmOkBtn").addEventListener("click", onOk);
       $("confirmCancelBtn").addEventListener("click", onCancel);
       $("closeConfirmModalBtn").addEventListener("click", onCancel);
+      modal.addEventListener("click", onBackdrop);
+      window.addEventListener("keydown", onKey);
     });
   }
 
@@ -123,14 +140,14 @@
   }
 
   // ---------- NAVIGATION ----------
-  function switchTab(tabName) {
+  function switchTab(tabName, opts = {}) {
     document.querySelectorAll(".nav-tab").forEach((b) => {
       b.classList.toggle("active", b.dataset.tab === tabName);
     });
     document.querySelectorAll(".tab-panel").forEach((p) => {
       p.classList.toggle("active", p.id === `tab-${tabName}`);
     });
-    if (tabName === "jobs") {
+    if (tabName === "jobs" && !opts.skipLoad) {
       loadJobsList();
     }
   }
@@ -652,6 +669,8 @@
     }
 
     $("startJobBtn").disabled = true;
+    // Close any prior SSE stream before creating a new job to free browser HTTP connection slots
+    closeStream();
     try {
       const job = await api("/api/jobs/local", {
         method: "POST",
@@ -668,8 +687,8 @@
         }),
       });
       toast(`批量压缩任务已启动（共 ${job.stats.total_files} 个 PDF）`, "success");
-      switchTab("jobs");
-      selectJob(job.id);
+      switchTab("jobs", { skipLoad: true });
+      await selectJob(job.id);
     } catch (err) {
       toast(err.message, "error");
     } finally {
@@ -729,8 +748,8 @@
       state.uploadQueue = [];
       renderUploadQueue();
       toast(`全部 ${total} 个 PDF 上传完成，正在全力压缩中`, "success");
-      switchTab("jobs");
-      selectJob(job.id);
+      switchTab("jobs", { skipLoad: true });
+      await selectJob(job.id);
     } catch (err) {
       toast(`上传失败: ${err.message}`, "error");
     } finally {
@@ -762,6 +781,7 @@
       return;
     }
     const page = Math.max(0, (Number($("previewPageNum").value) || 1) - 1);
+    $("runLocalPreviewBtn").disabled = true;
     $("previewLoading").classList.remove("hidden");
     $("previewResultArea").classList.add("hidden");
     try {
@@ -774,6 +794,7 @@
     } catch (err) {
       toast(err.message, "error");
     } finally {
+      $("runLocalPreviewBtn").disabled = false;
       $("previewLoading").classList.add("hidden");
     }
   }
@@ -809,46 +830,103 @@
   });
 
   // ---------- JOBS MONITOR & SSE ----------
-  async function loadJobsList() {
+  function updateRunningBadgeFromCache() {
+    const runningCount = state.jobsCache.filter((j) => j.status === "running").length;
+    $("runningBadge").textContent = String(runningCount);
+    $("runningBadge").classList.toggle("hidden", runningCount === 0);
+    if (runningCount > 0) {
+      ensureSidebarSyncTimer();
+    } else {
+      stopSidebarSyncTimer();
+    }
+  }
+
+  function ensureSidebarSyncTimer() {
+    if (state.sidebarSyncTimer) return;
+    state.sidebarSyncTimer = setInterval(() => {
+      if (state.jobsCache.some((j) => j.status === "running" || j.status === "created")) {
+        loadJobsList({ skipAutoSelect: true });
+      } else {
+        stopSidebarSyncTimer();
+      }
+    }, 2500);
+  }
+
+  function stopSidebarSyncTimer() {
+    if (state.sidebarSyncTimer) {
+      clearInterval(state.sidebarSyncTimer);
+      state.sidebarSyncTimer = null;
+    }
+  }
+
+  function syncSidebarItemFromDetail(job) {
+    if (!job || !job.id) return;
+    const st = job.stats || {};
+    const idx = state.jobsCache.findIndex((j) => j.id === job.id);
+    if (idx >= 0) {
+      state.jobsCache[idx] = { ...state.jobsCache[idx], status: job.status, name: job.name, stats: st };
+    }
+    const item = $("jobsList")?.querySelector(`.job-item[data-job-id="${job.id}"]`);
+    if (item) {
+      const pill = item.querySelector(".js-job-status");
+      if (pill) {
+        pill.textContent = statusLabel(job.status);
+        pill.className = `status-pill js-job-status ${statusClass(job.status)}`;
+      }
+      const cnt = item.querySelector(".js-job-count");
+      if (cnt) {
+        cnt.textContent = `${st.completed_files || 0}/${st.total_files || 0} 文件`;
+      }
+      const saved = item.querySelector(".js-job-saved");
+      if (saved) {
+        saved.textContent = `省 ${fmtSize(st.saved_bytes || 0)}`;
+      }
+    }
+    updateRunningBadgeFromCache();
+  }
+
+  async function loadJobsList(opts = {}) {
+    const reqSeq = ++state.jobsListSeq;
     try {
       const data = await api("/api/jobs?limit=50");
+      if (reqSeq !== state.jobsListSeq) return; // Discard stale out-of-order response
+      state.jobsCache = data.jobs || [];
+
       const list = $("jobsList");
       list.innerHTML = "";
-      let runningCount = 0;
 
-      if (!data.jobs.length) {
+      if (!state.jobsCache.length) {
         list.innerHTML = `<div class="empty-state">暂无任务</div>`;
-        $("runningBadge").classList.add("hidden");
+        updateRunningBadgeFromCache();
         return;
       }
 
-      data.jobs.forEach((j) => {
-        if (j.status === "running") runningCount++;
+      state.jobsCache.forEach((j) => {
         const el = document.createElement("div");
         el.className = `job-item ${j.id === state.activeJobId ? "active" : ""}`;
+        el.dataset.jobId = j.id;
         const st = j.stats || {};
         el.innerHTML = `
           <div class="job-item-top">
             <span class="job-item-name" title="${j.name}">${j.name}</span>
-            <span class="status-pill ${statusClass(j.status)}">${statusLabel(j.status)}</span>
+            <span class="status-pill js-job-status ${statusClass(j.status)}">${statusLabel(j.status)}</span>
           </div>
           <div class="job-item-sub">
-            <span>${st.completed_files || 0}/${st.total_files || 0} 文件</span>
-            <span class="text-success">省 ${fmtSize(st.saved_bytes || 0)}</span>
+            <span class="js-job-count">${st.completed_files || 0}/${st.total_files || 0} 文件</span>
+            <span class="text-success js-job-saved">省 ${fmtSize(st.saved_bytes || 0)}</span>
           </div>
         `;
         el.addEventListener("click", () => selectJob(j.id));
         list.appendChild(el);
       });
 
-      $("runningBadge").textContent = String(runningCount);
-      $("runningBadge").classList.toggle("hidden", runningCount === 0);
+      updateRunningBadgeFromCache();
 
-      if (!state.activeJobId && data.jobs.length > 0) {
-        selectJob(data.jobs[0].id);
+      if (!opts.skipAutoSelect && !state.activeJobId && state.jobsCache.length > 0) {
+        selectJob(state.jobsCache[0].id);
       }
     } catch (err) {
-      toast(err.message, "error");
+      if (!opts.silent) toast(err.message, "error");
     }
   }
 
@@ -857,17 +935,26 @@
       state.eventSource.close();
       state.eventSource = null;
     }
+    if (state.pollTimer) {
+      clearTimeout(state.pollTimer);
+      state.pollTimer = null;
+    }
   }
 
   async function selectJob(jobId) {
     closeStream();
     state.activeJobId = jobId;
     state.filePage = 1;
-    document.querySelectorAll(".job-item").forEach((el) => el.classList.remove("active"));
-    loadJobsList();
+    document.querySelectorAll(".job-item").forEach((el) => {
+      el.classList.toggle("active", el.dataset.jobId === jobId);
+    });
 
     try {
-      const detail = await api(`/api/jobs/${jobId}`);
+      const [detail] = await Promise.all([
+        api(`/api/jobs/${jobId}`),
+        loadJobsList({ skipAutoSelect: true }),
+      ]);
+      if (state.activeJobId !== jobId) return;
       renderJobDetail(detail);
       loadJobFiles();
 
@@ -880,33 +967,73 @@
   }
 
   let lastTableRefresh = 0;
+  let lastSidebarRefresh = 0;
+
+  function startFallbackPolling(jobId) {
+    if (state.pollTimer) clearTimeout(state.pollTimer);
+    const poll = async () => {
+      if (state.activeJobId !== jobId) return;
+      try {
+        const detail = await api(`/api/jobs/${jobId}`);
+        if (state.activeJobId !== jobId) return;
+        renderJobDetail(detail);
+        loadJobFiles();
+        if (["completed", "cancelled", "failed", "paused"].includes(detail.status)) {
+          closeStream();
+          loadJobsList({ skipAutoSelect: true });
+          return;
+        }
+      } catch {}
+      if (state.activeJobId === jobId) {
+        state.pollTimer = setTimeout(poll, 1200);
+      }
+    };
+    state.pollTimer = setTimeout(poll, 800);
+  }
+
   function connectJobStream(jobId) {
     closeStream();
     const es = new EventSource(`/api/jobs/${jobId}/stream`);
     state.eventSource = es;
     es.onmessage = (ev) => {
+      if (state.activeJobId !== jobId) {
+        closeStream();
+        return;
+      }
       try {
         const detail = JSON.parse(ev.data);
         renderJobDetail(detail);
         const now = Date.now();
-        if (now - lastTableRefresh > 2000 || detail.status !== "running") {
+        if (now - lastTableRefresh > 1500 || detail.status !== "running") {
           lastTableRefresh = now;
           loadJobFiles();
         }
+        if (now - lastSidebarRefresh > 2500) {
+          lastSidebarRefresh = now;
+          loadJobsList({ skipAutoSelect: true, silent: true });
+        }
         if (["completed", "cancelled", "failed", "paused"].includes(detail.status)) {
           closeStream();
-          loadJobsList();
+          loadJobsList({ skipAutoSelect: true });
           loadJobFiles();
         }
       } catch {}
     };
     es.onerror = () => {
-      closeStream();
+      if (state.eventSource === es) {
+        es.close();
+        state.eventSource = null;
+        // Seamless fallback polling so UI never freezes if SSE drops
+        if (state.activeJobId === jobId) {
+          startFallbackPolling(jobId);
+        }
+      }
     };
   }
 
   function renderJobDetail(job) {
     state.activeJobDetail = job;
+    syncSidebarItemFromDetail(job);
     $("jobEmptyState").classList.add("hidden");
     $("jobDetailContent").classList.remove("hidden");
 

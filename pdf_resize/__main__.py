@@ -56,7 +56,7 @@ def cmd_compress(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     storage = Storage()
-    manager = JobManager(storage)
+    manager = JobManager(storage, recover=True)
     print(f"正在扫描 {len(args.sources)} 个目录: {', '.join(args.sources)} ...")
     job = manager.create_local_job(
         source_dirs=args.sources,

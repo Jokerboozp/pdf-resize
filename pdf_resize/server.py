@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import os
 import shutil
@@ -35,19 +36,28 @@ DATA_DIR = BASE_DIR.parent / "data"
 UPLOAD_ROOT = DATA_DIR / "uploads"
 
 storage = Storage(DATA_DIR / "jobs.db")
-manager = JobManager(storage)
-
-app = FastAPI(title="PDF Resize", version="1.0.0")
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+manager = JobManager(storage, recover=False)
 
 
-@app.middleware("http")
-async def _no_stale_static_cache(request: Request, call_next):
-    response = await call_next(request)
-    if request.url.path == "/" or request.url.path.startswith("/static/"):
+class NoCacheStaticFiles(StaticFiles):
+    """Serve static assets with no-store headers without wrapping SSE in BaseHTTPMiddleware."""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
-    return response
+        return response
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Recover interrupted jobs only when the main ASGI server starts (never on worker import)
+    manager.recover_on_startup()
+    yield
+
+
+app = FastAPI(title="PDF Resize", version="1.0.0", lifespan=_lifespan)
+app.mount("/static", NoCacheStaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 def _static_version() -> str:
@@ -452,14 +462,18 @@ async def api_stream_job(job_id: str, request: Request) -> StreamingResponse:
                 break
             payload = json.dumps(detail, ensure_ascii=False)
             yield f"data: {payload}\n\n"
-            if detail["status"] in ("completed", "cancelled", "failed"):
+            if detail["status"] in ("completed", "cancelled", "failed", "paused"):
                 break
-            last_ver = await asyncio.to_thread(manager.wait_for_update, last_ver, 1.0)
+            last_ver = await asyncio.to_thread(manager.wait_for_update, last_ver, 0.8)
 
     return StreamingResponse(
         event_gen(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
