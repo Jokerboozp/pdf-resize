@@ -73,10 +73,14 @@ jobs:
       - name: Smoke test published PDFResize.exe native runtime & package zip
         shell: pwsh
         run: |
-          $exe = Resolve-Path "dist/PDF-Resize-Windows-x64/PDFResize.exe"
+          $exe = (Resolve-Path "dist/PDF-Resize-Windows-x64/PDFResize.exe").Path
           Write-Host "Verified binary: $exe"
-          & $exe --self-test
-          if ($LASTEXITCODE -ne 0) { throw "PDFResize.exe --self-test exited with $LASTEXITCODE" }
+          $outLog = Join-Path $env:TEMP "selftest_out.txt"
+          $errLog = Join-Path $env:TEMP "selftest_err.txt"
+          $proc = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+          if (Test-Path $outLog) { Get-Content $outLog }
+          if (Test-Path $errLog) { Get-Content $errLog }
+          if ($proc.ExitCode -ne 0) { throw "PDFResize.exe --self-test exited with $($proc.ExitCode)" }
           Compress-Archive -Path "dist/PDF-Resize-Windows-x64/*" -DestinationPath "dist/PDF-Resize-Windows-x64.zip" -Force
           Get-Item "dist/PDF-Resize-Windows-x64.zip" | Select-Object Name, Length
 
