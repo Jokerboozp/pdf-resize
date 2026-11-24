@@ -6,9 +6,8 @@
   - 纯原生 `QuartzFilter` + `PDFKit` + `CoreGraphics` 压缩引擎，100% 保留矢量文字清晰度与可复制性。
   - 原生 C `SQLite3`（WAL 模式）断点续传与已优化指纹跳过，子进程分批隔离调度支持 60GB / 3000+ 海量 PDF 零内存累积。
 
-## 待办 (TODO)
-- [ ] **Windows 原生桌面端（WinUI 3 / Windows App SDK · Fluent 2 设计规范）** — 详见 [windows/TODO.md](windows/TODO.md)
-  - [ ] 使用 C# / .NET 8 + Windows App SDK (WinUI 3) 构建纯原生 Windows 桌面窗口（彻底替代旧版内嵌网页壳）。
-  - [ ] 遵循 Microsoft Fluent 2 设计规范：启用 `Mica` / `MicaAlt` 主窗口材质与 `DesktopAcrylic` 浮层材质，使用原生 `NavigationView`、`CommandBar`、`Expander`、`InfoBar` 与 `DataGrid`/虚拟化 `ListView`，自适应系统深浅色与主题强调色。
-  - [ ] 接入高性能原生 PDF 压缩内核（PDFium / MuPDF 原生绑定或独立原生 Worker 进程池），支持多盘符多目录递归去重、同卷原子替换（`MoveFileExW` `MOVEFILE_REPLACE_EXISTING`）与断点续传。
-  - [ ] 配置 GitHub Actions `windows-latest` MSBuild 自动打包签名发布 MSIX / 绿色单目录发行包。
+- [x] **Windows 原生桌面端（WinUI 3 / Windows App SDK · Fluent 2 设计规范）** — 位于 `windows/`
+  - [x] 使用 C# / .NET 8 + Windows App SDK 1.6 (WinUI 3) 构建纯原生自包含 Windows 桌面应用（零 WebView 内嵌网页壳）。
+  - [x] 遵循 Microsoft Fluent 2 设计规范：启用 `MicaBackdrop` 云母主材质（自动回退 `DesktopAcrylicBackdrop`）、沉浸式自定义标题栏（完整保留 Windows 11 Snap Layouts）、原生 `NavigationView`、`Expander`、`InfoBar`、`InfoBadge` 与 UI 虚拟化 `ListView`，自适应系统深浅色与主题强调色。
+  - [x] 原生 C# 矢量保留压缩引擎（`PDFsharp 6` 结构修改 + `SkiaSharp` 位图高质重采样重编码），支持 Win32 COM `IFileOpenDialog` 跨盘符一次多选文件夹、资源管理器拖拽导入、基于 `Windows.Data.Pdf` 的单文件卷帘/并排双模式对比、同卷临时文件页数校验与 `File.Move` 原子替换、`SQLite WAL` 断点续传及 `--worker-one` 子进程内存隔离。
+  - [x] 配置 GitHub Actions `windows-latest` 自动执行 `xUnit` 测试并打包上传免安装自包含 `PDF-Resize-Windows-x64.zip`。

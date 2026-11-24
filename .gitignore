@@ -7,7 +7,12 @@ data/
 *.log
 macos/.build/
 macos/.swiftpm/
+windows/**/bin/
+windows/**/obj/
+windows/.vs/
+publish/
 build/
 dist/
 *.dmg
+*.zip
 .DS_Store

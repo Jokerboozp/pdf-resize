@@ -1,0 +1,362 @@
+<Page
+    x:Class="PDFResize.App.Views.ComparePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid Padding="24,18,24,18" RowSpacing="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Top Toolbar Card -->
+        <Border Grid.Row="0" Style="{StaticResource FluentCardBorderStyle}" Padding="16,12,16,12">
+            <Grid ColumnSpacing="12" RowSpacing="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Button Click="PickPdf_Click" Style="{ThemeResource AccentButtonStyle}">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <FontIcon Glyph="&#xE8E5;" FontSize="14" />
+                        <TextBlock Text="选择对比 PDF…" />
+                    </StackPanel>
+                </Button>
+
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                    <TextBlock
+                        x:Name="FileNameText"
+                        Text="尚未载入 PDF 文件"
+                        Style="{ThemeResource BodyStrongTextBlockStyle}"
+                        TextTrimming="CharacterEllipsis" />
+                    <TextBlock
+                        x:Name="FilePathText"
+                        Text="选择任意扫描件或图文 PDF，不修改原文件即可实时对比原图与压缩后矢量/位图细节"
+                        FontSize="11"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+
+                <!-- Preset Quick Switcher -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                    <Button x:Name="CmpLosslessBtn" Tag="Lossless" Content="无损" Click="ComparePreset_Click" />
+                    <Button x:Name="CmpLightBtn" Tag="Light" Content="轻度" Click="ComparePreset_Click" />
+                    <Button x:Name="CmpBalancedBtn" Tag="Balanced" Content="均衡" Click="ComparePreset_Click" />
+                    <Button x:Name="CmpExtremeBtn" Tag="Extreme" Content="极致" Click="ComparePreset_Click" />
+                </StackPanel>
+
+                <!-- View Mode + Zoom -->
+                <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <ComboBox
+                        x:Name="ModeCombo"
+                        SelectedIndex="0"
+                        SelectionChanged="ModeCombo_SelectionChanged"
+                        Width="136">
+                        <ComboBoxItem Content="卷帘分割对比" Tag="curtain" />
+                        <ComboBoxItem Content="左右并排对比" Tag="side" />
+                    </ComboBox>
+
+                    <ComboBox
+                        x:Name="ZoomCombo"
+                        SelectedIndex="0"
+                        SelectionChanged="ZoomCombo_SelectionChanged"
+                        Width="112">
+                        <ComboBoxItem Content="适应窗口" Tag="0" />
+                        <ComboBoxItem Content="100%" Tag="1.0" />
+                        <ComboBoxItem Content="150%" Tag="1.5" />
+                        <ComboBoxItem Content="200%" Tag="2.0" />
+                    </ComboBox>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- KPI Metrics + Apply Preset Strip -->
+        <Border Grid.Row="1" Style="{StaticResource FluentSubtleCardBorderStyle}">
+            <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                    <TextBlock Text="原始体积：" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock x:Name="OrigSizeLabel" Text="—" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                    <TextBlock Text="预览压缩后：" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock x:Name="CompSizeLabel" Text="—" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                    <TextBlock Text="预计可省：" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock x:Name="SavedRatioLabel" Text="—" Style="{ThemeResource BodyStrongTextBlockStyle}" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                </StackPanel>
+
+                <TextBlock
+                    x:Name="MetaStatsLabel"
+                    Grid.Column="3"
+                    Text=""
+                    VerticalAlignment="Center"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    TextTrimming="CharacterEllipsis" />
+
+                <ProgressRing
+                    x:Name="PreviewBusyRing"
+                    Grid.Column="4"
+                    Width="20"
+                    Height="20"
+                    IsActive="False"
+                    Visibility="Collapsed" />
+
+                <Button
+                    Grid.Column="5"
+                    Click="ApplyPresetToWorkbench_Click">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <FontIcon Glyph="&#xE73E;" FontSize="13" />
+                        <TextBlock Text="应用此档位到工作台" />
+                    </StackPanel>
+                </Button>
+            </Grid>
+        </Border>
+
+        <!-- Main PDF Canvas Area -->
+        <Border
+            Grid.Row="2"
+            CornerRadius="8"
+            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1">
+            <Grid>
+                <!-- Empty State -->
+                <StackPanel
+                    x:Name="EmptyComparePanel"
+                    Spacing="10"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                    <FontIcon
+                        Glyph="&#xE8A1;"
+                        FontSize="42"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        HorizontalAlignment="Center" />
+                    <TextBlock
+                        Text="选择任意 PDF 查看压缩前后逐像素对比"
+                        Style="{ThemeResource SubtitleTextBlockStyle}"
+                        HorizontalAlignment="Center" />
+                    <TextBlock
+                        Text="采用 Windows.Data.Pdf 原生高分矢量光栅化，拖动分割线即可检验小字号边缘与图片噪点"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        HorizontalAlignment="Center" />
+                    <Button
+                        Click="PickPdf_Click"
+                        HorizontalAlignment="Center"
+                        Margin="0,6,0,0"
+                        Style="{ThemeResource AccentButtonStyle}"
+                        Content="浏览并载入 PDF…" />
+                </StackPanel>
+
+                <!-- Mode 1: Split Curtain View -->
+                <ScrollViewer
+                    x:Name="CurtainScrollViewer"
+                    Visibility="Collapsed"
+                    HorizontalScrollBarVisibility="Auto"
+                    VerticalScrollBarVisibility="Auto"
+                    Padding="16">
+                    <Grid
+                        x:Name="CurtainStage"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        PointerPressed="CurtainStage_PointerPressed"
+                        PointerMoved="CurtainStage_PointerMoved"
+                        PointerReleased="CurtainStage_PointerReleased"
+                        SizeChanged="CurtainStage_SizeChanged">
+
+                        <!-- Bottom Layer: Compressed -->
+                        <Image
+                            x:Name="CurtainCompressedImage"
+                            Stretch="Uniform" />
+
+                        <!-- Top Layer: Original (Clipped to left side of curtain) -->
+                        <Image
+                            x:Name="CurtainOriginalImage"
+                            Stretch="Uniform">
+                            <Image.Clip>
+                                <RectangleGeometry x:Name="OriginalClipGeometry" Rect="0,0,400,800" />
+                            </Image.Clip>
+                        </Image>
+
+                        <!-- Vertical Accent Divider Line -->
+                        <Canvas IsHitTestVisible="False">
+                            <Border
+                                x:Name="CurtainDividerLine"
+                                Width="3"
+                                Height="600"
+                                Background="{ThemeResource AccentFillColorDefaultBrush}" />
+                            <Border
+                                x:Name="CurtainHandleThumb"
+                                Width="34"
+                                Height="34"
+                                CornerRadius="17"
+                                Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                BorderBrush="White"
+                                BorderThickness="2">
+                                <FontIcon
+                                    Glyph="&#xE76F;"
+                                    FontSize="14"
+                                    Foreground="White"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center" />
+                            </Border>
+                        </Canvas>
+
+                        <!-- Corner Labels -->
+                        <Border
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Top"
+                            Margin="12"
+                            Padding="10,4,10,4"
+                            CornerRadius="6"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            IsHitTestVisible="False"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                            <TextBlock Text="左侧：原图 (Original)" FontSize="12" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                        </Border>
+
+                        <Border
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Top"
+                            Margin="12"
+                            Padding="10,4,10,4"
+                            CornerRadius="6"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            IsHitTestVisible="False"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                            <TextBlock Text="右侧：压缩后 (Compressed)" FontSize="12" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                        </Border>
+                    </Grid>
+                </ScrollViewer>
+
+                <!-- Mode 2: Synchronized Side-by-Side View -->
+                <Grid x:Name="SideBySideGrid" Visibility="Collapsed" ColumnSpacing="12" Padding="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border
+                        Grid.Column="0"
+                        CornerRadius="6"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1"
+                        Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                        <Grid>
+                            <ScrollViewer
+                                x:Name="LeftSideScroll"
+                                HorizontalScrollBarVisibility="Auto"
+                                VerticalScrollBarVisibility="Auto"
+                                ViewChanged="LeftSideScroll_ViewChanged"
+                                Padding="10">
+                                <Image x:Name="SideOriginalImage" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </ScrollViewer>
+                            <Border
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Top"
+                                Margin="10"
+                                Padding="8,3,8,3"
+                                CornerRadius="4"
+                                IsHitTestVisible="False"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                                <TextBlock Text="原文件 (Original)" FontSize="11" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                            </Border>
+                        </Grid>
+                    </Border>
+
+                    <Border
+                        Grid.Column="1"
+                        CornerRadius="6"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1"
+                        Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                        <Grid>
+                            <ScrollViewer
+                                x:Name="RightSideScroll"
+                                HorizontalScrollBarVisibility="Auto"
+                                VerticalScrollBarVisibility="Auto"
+                                ViewChanged="RightSideScroll_ViewChanged"
+                                Padding="10">
+                                <Image x:Name="SideCompressedImage" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </ScrollViewer>
+                            <Border
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Top"
+                                Margin="10"
+                                Padding="8,3,8,3"
+                                CornerRadius="4"
+                                IsHitTestVisible="False"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                                <TextBlock Text="压缩预览 (Compressed)" FontSize="11" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                            </Border>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
+        </Border>
+
+        <!-- Bottom Page Navigation & Curtain Slider Bar -->
+        <Border Grid.Row="3" Style="{StaticResource FluentSubtleCardBorderStyle}">
+            <Grid ColumnSpacing="18">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <Button x:Name="PrevPageBtn" Content="上一页" Click="PrevPage_Click" IsEnabled="False" />
+                    <TextBlock
+                        x:Name="PageIndicatorText"
+                        Text="第 0 / 0 页"
+                        VerticalAlignment="Center"
+                        Margin="6,0,6,0"
+                        Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                    <Button x:Name="NextPageBtn" Content="下一页" Click="NextPage_Click" IsEnabled="False" />
+                </StackPanel>
+
+                <StackPanel
+                    x:Name="CurtainSliderPanel"
+                    Grid.Column="1"
+                    Orientation="Horizontal"
+                    Spacing="12"
+                    VerticalAlignment="Center"
+                    HorizontalAlignment="Center">
+                    <TextBlock Text="卷帘分割位置：" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <Slider
+                        x:Name="CurtainSlider"
+                        Width="280"
+                        Minimum="0"
+                        Maximum="100"
+                        Value="50"
+                        ValueChanged="CurtainSlider_ValueChanged" />
+                </StackPanel>
+
+                <TextBlock
+                    Grid.Column="2"
+                    Text="提示：可直接在画面上按住鼠标左右拖动分割线"
+                    FontSize="12"
+                    VerticalAlignment="Center"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </Grid>
+        </Border>
+    </Grid>
+</Page>

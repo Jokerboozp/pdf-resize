@@ -1,4 +1,4 @@
-name: Build Native macOS App (Swift + Liquid Glass)
+name: Build Native Desktop Apps (macOS Swift + Windows WinUI 3)
 
 on:
   push:
@@ -41,9 +41,54 @@ jobs:
           name: PDF-Resize-macOS-Native
           path: dist/PDF-Resize-macOS-*.dmg
 
+  build-windows:
+    name: Windows Native WinUI 3 (Fluent 2 x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Run Windows native engine xUnit tests
+        shell: pwsh
+        run: |
+          dotnet test windows/PDFResize.Tests/PDFResize.Tests.csproj -c Release --verbosity normal
+
+      - name: Publish self-contained WinUI 3 desktop client (win-x64)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          dotnet publish windows/PDFResize.App/PDFResize.App.csproj `
+            -c Release `
+            -r win-x64 `
+            -p:Platform=x64 `
+            -p:WindowsPackageType=None `
+            -p:WindowsAppSDKSelfContained=true `
+            --self-contained true `
+            -o dist/PDF-Resize-Windows-x64
+
+      - name: Smoke test published PDFResize.exe native runtime & package zip
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "dist/PDF-Resize-Windows-x64/PDFResize.exe"
+          Write-Host "Verified binary: $exe"
+          & $exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw "PDFResize.exe --self-test exited with $LASTEXITCODE" }
+          Compress-Archive -Path "dist/PDF-Resize-Windows-x64/*" -DestinationPath "dist/PDF-Resize-Windows-x64.zip" -Force
+          Get-Item "dist/PDF-Resize-Windows-x64.zip" | Select-Object Name, Length
+
+      - name: Upload Windows WinUI 3 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDF-Resize-Windows-WinUI3-x64
+          path: dist/PDF-Resize-Windows-x64.zip
+
   release:
     name: Publish GitHub Release
-    needs: [build-macos]
+    needs: [build-macos, build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -56,3 +101,4 @@ jobs:
         with:
           files: |
             artifacts/PDF-Resize-macOS-Native/PDF-Resize-macOS-*.dmg
+            artifacts/PDF-Resize-Windows-WinUI3-x64/PDF-Resize-Windows-x64.zip
