@@ -166,7 +166,6 @@ public sealed partial class MainWindow : Window
                 _ => Application.Current.RequestedTheme == ApplicationTheme.Dark
             };
 
-            titleBar.PreferredTheme = isDark ? TitleBarTheme.Dark : TitleBarTheme.Light;
             titleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
 
             titleBar.ButtonBackgroundColor = Colors.Transparent;
