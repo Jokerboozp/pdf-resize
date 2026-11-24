@@ -9,13 +9,15 @@ namespace PDFResize.App.Views;
 
 public sealed partial class WorkbenchPage : Page
 {
-    private bool _updatingControls;
+    private bool _updatingControls = true;
     private int _scanVersion;
 
     public WorkbenchPage()
     {
+        _updatingControls = true;
         InitializeComponent();
         WorkersBox.Maximum = Math.Max(2, Environment.ProcessorCount);
+        _updatingControls = false;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -306,7 +308,7 @@ public sealed partial class WorkbenchPage : Page
 
     private void DpiSlider_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        if (_updatingControls) return;
+        if (!IsLoaded || _updatingControls) return;
         App.State.Config.TargetDpi = (int)Math.Round(e.NewValue);
         App.State.Config.Preset = CompressionPreset.Custom;
         App.State.Config.CompressImages = true;
@@ -318,7 +320,7 @@ public sealed partial class WorkbenchPage : Page
 
     private void QualitySlider_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        if (_updatingControls) return;
+        if (!IsLoaded || _updatingControls) return;
         App.State.Config.JpegQuality = (int)Math.Round(e.NewValue);
         App.State.Config.Preset = CompressionPreset.Custom;
         App.State.Config.CompressImages = true;
@@ -329,7 +331,7 @@ public sealed partial class WorkbenchPage : Page
 
     private void AdvancedToggle_Toggled(object sender, RoutedEventArgs e)
     {
-        if (_updatingControls) return;
+        if (!IsLoaded || _updatingControls) return;
         bool prevSkip = App.State.Config.SkipAlreadyOptimized;
 
         App.State.Config.Grayscale = GrayscaleToggle.IsOn;
@@ -343,7 +345,7 @@ public sealed partial class WorkbenchPage : Page
 
     private void AdvancedNumber_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
-        if (_updatingControls || double.IsNaN(args.NewValue)) return;
+        if (!IsLoaded || _updatingControls || double.IsNaN(args.NewValue)) return;
 
         if (ReferenceEquals(sender, MinSavingBox))
         {
@@ -362,7 +364,7 @@ public sealed partial class WorkbenchPage : Page
 
     private void OutputModeRadio_Checked(object sender, RoutedEventArgs e)
     {
-        if (_updatingControls) return;
+        if (!IsLoaded || _updatingControls) return;
         App.State.OutputMode = InplaceRadio.IsChecked == true ? OutputMode.Inplace : OutputMode.OutputDirectory;
         BackupDirRow.Visibility = App.State.OutputMode == OutputMode.Inplace ? Visibility.Visible : Visibility.Collapsed;
         OutputDirRow.Visibility = App.State.OutputMode == OutputMode.OutputDirectory ? Visibility.Visible : Visibility.Collapsed;
@@ -372,13 +374,13 @@ public sealed partial class WorkbenchPage : Page
 
     private void BackupDirTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        if (_updatingControls) return;
+        if (!IsLoaded || _updatingControls) return;
         App.State.BackupDirectory = BackupDirTextBox.Text.Trim();
     }
 
     private void OutputDirTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        if (_updatingControls) return;
+        if (!IsLoaded || _updatingControls) return;
         App.State.OutputDirectory = OutputDirTextBox.Text.Trim();
     }
 

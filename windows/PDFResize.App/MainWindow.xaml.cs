@@ -17,6 +17,7 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
+        _suppressNavEvent = true;
         InitializeComponent();
 
         ConfigureWindowChromeAndBackdrop();
@@ -31,6 +32,7 @@ public sealed partial class MainWindow : Window
         RefreshChromeMetrics();
 
         NavView.SelectedItem = NavWorkbench;
+        _suppressNavEvent = false;
         ContentFrame.Navigate(typeof(WorkbenchPage));
     }
 
@@ -39,13 +41,20 @@ public sealed partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
 
-        if (MicaController.IsSupported())
+        try
         {
-            SystemBackdrop = new MicaBackdrop { Kind = MicaKind.Base };
+            if (MicaController.IsSupported())
+            {
+                SystemBackdrop = new MicaBackdrop { Kind = MicaKind.Base };
+            }
+            else if (DesktopAcrylicController.IsSupported())
+            {
+                SystemBackdrop = new DesktopAcrylicBackdrop();
+            }
         }
-        else if (DesktopAcrylicController.IsSupported())
+        catch
         {
-            SystemBackdrop = new DesktopAcrylicBackdrop();
+            // Fallback gracefully to solid theme background on unsupported graphics adapters
         }
 
         try

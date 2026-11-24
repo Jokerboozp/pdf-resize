@@ -197,7 +197,7 @@ public sealed partial class JobsPage : Page
 
     private void JobSelectorCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_suppressComboSelection) return;
+        if (!IsLoaded || _suppressComboSelection) return;
         if (JobSelectorCombo.SelectedItem is ComboBoxItem { Tag: string id })
         {
             App.State.SelectedJobId = id;
@@ -215,6 +215,7 @@ public sealed partial class JobsPage : Page
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
+        if (!IsLoaded) return;
         _searchQuery = SearchBox.Text.Trim();
         RefreshAll(forceFileList: true);
     }

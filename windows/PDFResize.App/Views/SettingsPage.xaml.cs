@@ -7,12 +7,14 @@ namespace PDFResize.App.Views;
 
 public sealed partial class SettingsPage : Page
 {
-    private bool _initializing;
+    private bool _initializing = true;
 
     public SettingsPage()
     {
+        _initializing = true;
         InitializeComponent();
         DefaultWorkersBox.Maximum = Math.Max(2, Environment.ProcessorCount);
+        _initializing = false;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)

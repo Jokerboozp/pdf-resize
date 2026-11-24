@@ -277,6 +277,7 @@ public sealed partial class ComparePage : Page
 
     private void CurtainSlider_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
+        if (!IsLoaded) return;
         _curtainRatio = Math.Clamp(e.NewValue / 100.0, 0.0, 1.0);
         UpdateCurtainGeometry();
     }

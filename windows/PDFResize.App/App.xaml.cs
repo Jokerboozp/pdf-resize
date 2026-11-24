@@ -22,6 +22,7 @@ public partial class App : Application
 
     private void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
     {
+        Program.LogCrash("XamlUnhandled", e.Exception, e.Message);
         e.Handled = true;
         State.ShowBanner("运行提示", e.Message, Microsoft.UI.Xaml.Controls.InfoBarSeverity.Error);
     }
