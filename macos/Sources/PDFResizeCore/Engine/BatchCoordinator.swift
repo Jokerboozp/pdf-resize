@@ -51,12 +51,12 @@ public enum WorkerCLI {
 
 // MARK: - Reactive MainActor Batch Coordinator
 
-public enum AppNavigationSection: String, CaseIterable, Identifiable {
+public enum AppNavigationSection: String, CaseIterable, Identifiable, Hashable {
     case workbench = "workbench"
     case compare = "compare"
     case jobs = "jobs"
 
-    public var id: String { rawValue }
+    public var id: Self { self }
 
     public var title: String {
         switch self {

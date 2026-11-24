@@ -92,25 +92,40 @@ public struct MainWindowView: View {
 
     // MARK: - Native Vibrancy Sidebar
 
+    private var sidebarSelectionBinding: Binding<AppNavigationSection?> {
+        Binding<AppNavigationSection?>(
+            get: { coordinator.selectedSection },
+            set: { newValue in
+                if let newValue {
+                    coordinator.selectedSection = newValue
+                }
+            }
+        )
+    }
+
     private var sidebarContent: some View {
-        List(selection: $coordinator.selectedSection) {
+        List(selection: sidebarSelectionBinding) {
             Section("工作空间") {
-                ForEach(AppNavigationSection.allCases) { section in
-                    Label {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(section.title)
-                                .font(.system(size: 13, weight: .medium))
-                            Text(section.subtitle)
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(.secondary)
+                ForEach(AppNavigationSection.allCases, id: \.self) { section in
+                    NavigationLink(value: section) {
+                        Label {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(section.title)
+                                    .font(.system(size: 13, weight: .medium))
+                                Text(section.subtitle)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: section.symbolName)
+                                .symbolRenderingMode(.hierarchical)
+                                .font(.system(size: 14, weight: .semibold))
                         }
-                    } icon: {
-                        Image(systemName: section.symbolName)
-                            .symbolRenderingMode(.hierarchical)
-                            .font(.system(size: 14, weight: .semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
-                    .tag(section)
                     .badge(section == .jobs && coordinator.runningJobsCount > 0 ? coordinator.runningJobsCount : 0)
+                    .tag(section)
                 }
             }
 
