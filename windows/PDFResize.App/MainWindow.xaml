@@ -11,7 +11,7 @@
         DragLeave="RootGrid_DragLeave"
         Drop="RootGrid_Drop">
         <Grid.RowDefinitions>
-            <RowDefinition Height="40" />
+            <RowDefinition Height="36" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 

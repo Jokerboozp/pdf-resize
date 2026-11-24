@@ -1,3 +1,4 @@
+using Microsoft.UI;
 using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -8,6 +9,7 @@ using PDFResize.Core.Models;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Graphics;
 using Windows.Storage;
+using Windows.UI;
 
 namespace PDFResize.App;
 
@@ -26,6 +28,8 @@ public sealed partial class MainWindow : Window
         App.State.BannerRequested += OnBannerRequested;
         App.State.ThemeChanged += OnThemeChanged;
         App.State.Coordinator.StateChanged += OnCoordinatorStateChanged;
+        RootGrid.Loaded += (_, _) => ApplyCaptionButtonColors();
+        RootGrid.ActualThemeChanged += (_, _) => ApplyCaptionButtonColors();
         Closed += OnWindowClosed;
 
         FooterWorkerHintText.Text = $"CPU {Environment.ProcessorCount} 线程 · 默认 {CompressionConfig.RecommendedWorkers()} 隔离进程";
@@ -40,6 +44,7 @@ public sealed partial class MainWindow : Window
     {
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
+        ApplyCaptionButtonColors();
 
         try
         {
@@ -145,7 +150,53 @@ public sealed partial class MainWindow : Window
         DispatcherQueue.TryEnqueue(() =>
         {
             RootGrid.RequestedTheme = theme;
+            ApplyCaptionButtonColors();
         });
+    }
+
+    private void ApplyCaptionButtonColors()
+    {
+        try
+        {
+            var titleBar = AppWindow.TitleBar;
+            bool isDark = RootGrid.ActualTheme switch
+            {
+                ElementTheme.Dark => true,
+                ElementTheme.Light => false,
+                _ => Application.Current.RequestedTheme == ApplicationTheme.Dark
+            };
+
+            titleBar.PreferredTheme = isDark ? TitleBarTheme.Dark : TitleBarTheme.Light;
+            titleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
+
+            titleBar.ButtonBackgroundColor = Colors.Transparent;
+            titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
+
+            titleBar.ButtonForegroundColor = isDark
+                ? Color.FromArgb(255, 255, 255, 255)
+                : Color.FromArgb(255, 25, 25, 25);
+            titleBar.ButtonInactiveForegroundColor = isDark
+                ? Color.FromArgb(255, 160, 160, 160)
+                : Color.FromArgb(255, 115, 115, 115);
+
+            titleBar.ButtonHoverForegroundColor = isDark
+                ? Color.FromArgb(255, 255, 255, 255)
+                : Color.FromArgb(255, 0, 0, 0);
+            titleBar.ButtonHoverBackgroundColor = isDark
+                ? Color.FromArgb(22, 255, 255, 255)
+                : Color.FromArgb(16, 0, 0, 0);
+
+            titleBar.ButtonPressedForegroundColor = isDark
+                ? Color.FromArgb(255, 225, 225, 225)
+                : Color.FromArgb(255, 50, 50, 50);
+            titleBar.ButtonPressedBackgroundColor = isDark
+                ? Color.FromArgb(14, 255, 255, 255)
+                : Color.FromArgb(26, 0, 0, 0);
+        }
+        catch
+        {
+            // Ignore if custom title bar theming is unavailable
+        }
     }
 
     private void OnCoordinatorStateChanged()
