@@ -93,16 +93,29 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [build-macos, build-windows]
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Create GitHub Release
+      - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest' }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && format('PDF Resize {0}', github.ref_name) || 'PDF Resize 最新自动构建版 (Latest)' }}
+          make_latest: true
+          prerelease: false
+          body: |
+            ### PDF Resize 双平台纯原生桌面端安装包
+
+            - **macOS 原生版 (`PDF-Resize-macOS-arm64.dmg`)**
+              - 纯 Swift + SwiftUI + Liquid Glass 视觉语言构建（Apple Silicon `arm64` 原生，零网页套壳）
+              - 双击打开 `.dmg`，将 `PDF Resize.app` 拖入 `Applications` 即可使用（若首次打开提示未公证，可在访达右键点击图标选「打开」或执行 `xattr -cr "/Applications/PDF Resize.app"`）
+            - **Windows 原生版 (`PDF-Resize-Windows-x64.zip`)**
+              - 纯 C# / .NET 8 + WinUI 3 (Microsoft Fluent 2 云母材质) 构建的自包含免安装绿色版
+              - 已内置 .NET 8 与 Windows App SDK 1.6 运行时，解压到任意文件夹后直接双击 **`PDFResize.exe`** 即可运行
           files: |
             artifacts/PDF-Resize-macOS-Native/PDF-Resize-macOS-*.dmg
             artifacts/PDF-Resize-Windows-WinUI3-x64/PDF-Resize-Windows-x64.zip

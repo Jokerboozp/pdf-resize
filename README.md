@@ -21,9 +21,10 @@
 
 ## Windows 快速运行与打包
 
-### 方式一：直接下载云端自动构建成品（推荐 · 无需安装任何开发环境）
-每次推送代码，GitHub Actions（`.github/workflows/build-desktop.yml`）都会自动运行单元测试并编译上传自包含绿色包：
-- 在 GitHub 仓库 **Actions** 页面下载 **`PDF-Resize-Windows-WinUI3-x64`** 产物，解压后直接双击 **`PDFResize.exe`** 即可运行（已内置 .NET 8 与 Windows App SDK 1.6 运行时）。
+### 方式一：直接从 GitHub Releases（发行版）下载（推荐 · 无需安装任何开发环境）
+每次推送代码或打标签，GitHub Actions（`.github/workflows/build-desktop.yml`）都会自动编译并发布到仓库右侧的 **Releases（发行版）**：
+- **Windows 用户**：下载 **`PDF-Resize-Windows-x64.zip`**，解压后直接双击 **`PDFResize.exe`** 即可运行（已内置 .NET 8 与 Windows App SDK 1.6 运行时）。
+- **macOS 用户**：下载 **`PDF-Resize-macOS-arm64.dmg`**，双击打开后将 **`PDF Resize.app`** 拖入 `Applications` 即可运行。
 
 ### 方式二：本地源码编译打包（需安装 .NET 8 SDK）
 ```bat
