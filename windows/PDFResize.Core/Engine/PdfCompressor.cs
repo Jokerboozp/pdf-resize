@@ -269,16 +269,15 @@ public static class PdfCompressor
 
     private static int OptimizeEmbeddedImages(PdfDocument doc, CompressionConfig cfg)
     {
-        var visited = new HashSet<PdfObjectID>();
+        var visited = new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance);
         var candidates = new List<PdfDictionary>();
 
         foreach (PdfObject obj in doc.Internals.GetAllObjects())
         {
             if (obj is PdfDictionary dict &&
-                dict.Elements.GetName("/Subtype") == "/Image")
+                dict.Elements.GetName("/Subtype") == "/Image" &&
+                visited.Add(dict))
             {
-                if (dict.ObjectID.ObjectNumber != 0 && !visited.Add(dict.ObjectID))
-                    continue;
                 candidates.Add(dict);
             }
         }
@@ -584,7 +583,7 @@ public static class PdfCompressor
     {
         try
         {
-            using var check = PdfReader.Open(pdfPath, PdfDocumentOpenMode.InformationOnly);
+            using var check = PdfReader.Open(pdfPath, PdfDocumentOpenMode.Import);
             return check.PageCount == expectedPages;
         }
         catch

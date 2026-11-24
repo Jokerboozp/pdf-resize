@@ -319,7 +319,7 @@ public sealed partial class ComparePage : Page
         }
     }
 
-    private void LeftSideScroll_ViewChanged(object sender, ScrollViewerViewChangedEventArgs e)
+    private void LeftSideScroll_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
     {
         if (_syncingScroll) return;
         _syncingScroll = true;
@@ -327,7 +327,7 @@ public sealed partial class ComparePage : Page
         _syncingScroll = false;
     }
 
-    private void RightSideScroll_ViewChanged(object sender, ScrollViewerViewChangedEventArgs e)
+    private void RightSideScroll_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
     {
         if (_syncingScroll) return;
         _syncingScroll = true;

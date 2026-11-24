@@ -52,11 +52,6 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      - name: Run Windows native engine xUnit tests
-        shell: pwsh
-        run: |
-          dotnet test windows/PDFResize.Tests/PDFResize.Tests.csproj -c Release --verbosity normal
-
       - name: Publish self-contained WinUI 3 desktop client (win-x64)
         shell: pwsh
         run: |
@@ -69,6 +64,11 @@ jobs:
             -p:WindowsAppSDKSelfContained=true `
             --self-contained true `
             -o dist/PDF-Resize-Windows-x64
+
+      - name: Run Windows native engine xUnit tests
+        shell: pwsh
+        run: |
+          dotnet test windows/PDFResize.Tests/PDFResize.Tests.csproj -c Release --verbosity normal
 
       - name: Smoke test published PDFResize.exe native runtime & package zip
         shell: pwsh
